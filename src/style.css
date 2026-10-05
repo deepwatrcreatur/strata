@@ -1953,8 +1953,8 @@ switch:checked slider {
   border-right: 1px solid alpha(@strata_border, 0.6);
 }
 
-/* Every scrollbar is the path-bar indicator: a thin accent thumb on a faint
-   trough, overlaid on content and faded by GTK until hover or scrolling. */
+/* Scrollbars use a thin accent thumb on a faint trough; Icons and List retain
+   their wider vertical grab target. GTK fades overlays until hover or scrolling. */
 scrollbar,
 scrollbar:hover,
 scrollbar.hovering,
@@ -2003,6 +2003,39 @@ scrollbar.vertical > range > trough > slider {
 
 scrollbar.horizontal > range > trough > slider {
   min-width: 32px;
+}
+
+.mode-icons .browser-listing-scroll > scrollbar.vertical,
+.mode-icons .browser-listing-scroll > scrollbar.vertical > range > trough,
+.mode-list .browser-listing-scroll > scrollbar.vertical,
+.mode-list .browser-listing-scroll > scrollbar.vertical > range > trough {
+  min-width: 9px;
+}
+
+.mode-list .browser-listing-scroll > scrollbar.vertical {
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+
+.mode-icons .browser-listing-scroll > scrollbar.vertical > range > trough,
+.mode-list .browser-listing-scroll > scrollbar.vertical > range > trough {
+  background: alpha(@strata_border, 0.08);
+}
+
+.mode-icons .browser-listing-scroll > scrollbar.vertical:hover > range > trough,
+.mode-icons .browser-listing-scroll > scrollbar.vertical.hovering > range > trough,
+.mode-icons .browser-listing-scroll > scrollbar.vertical.dragging > range > trough,
+.mode-list .browser-listing-scroll > scrollbar.vertical:hover > range > trough,
+.mode-list .browser-listing-scroll > scrollbar.vertical.hovering > range > trough,
+.mode-list .browser-listing-scroll > scrollbar.vertical.dragging > range > trough {
+  background: alpha(@strata_border, 0.12);
+}
+
+.mode-icons .browser-listing-scroll > scrollbar.vertical > range > trough > slider,
+.mode-list .browser-listing-scroll > scrollbar.vertical > range > trough > slider {
+  min-width: 7px;
+  margin: 4px 1px;
+  border-radius: 999px;
 }
 
 /* The mode scrollers need an opaque base to conceal the sidebar paned handle.

@@ -13,7 +13,7 @@ use crate::ui::{
             drag_icon_with_count, file_drag_content, file_drop_action, file_drop_commit,
             locations_from_file_list_value, prepare_file_drop_target,
         },
-        collection::{ViewMap, activate_recursive_search_result, cancel_source},
+        collection::{ViewMap, activate_recursive_search_result},
         entry::{
             entry_icon, entry_responds_to_preview_click, metadata_needs_fill, model_display_name,
         },
@@ -129,38 +129,6 @@ pub(super) fn column_rows(
         row.append(&icon);
         row.append(&middle);
         row.append(&chevron);
-        let motion = gtk::EventControllerMotion::new();
-        let list_item = item.downgrade();
-        let weak_state_for_enter = weak_state.clone();
-        let map_for_enter = map_for_hover.clone();
-        motion.connect_enter(move |controller, _, _| {
-            let Some(item) = list_item.upgrade() else {
-                return;
-            };
-            if let Some(state) = weak_state_for_enter.upgrade() {
-                let source_position = map_for_enter.source_position(item.position());
-                let entry =
-                    source_position.and_then(|position| state.browser.entry_at(depth, position));
-                if let Some(entry) = entry {
-                    if entry.is_directory() {
-                        if let Some(anchor) = controller.widget() {
-                            state.schedule_peek(depth, entry.location, anchor);
-                        }
-                    } else {
-                        cancel_source(&state.pending_peek);
-                        state.browser.close_peek();
-                    }
-                }
-            }
-        });
-        let weak_state_for_leave = weak_state.clone();
-        motion.connect_leave(move |_| {
-            if let Some(state) = weak_state_for_leave.upgrade() {
-                state.schedule_close_peek();
-            }
-        });
-        row.add_controller(motion);
-
         item.set_child(Some(&row));
         let pending_activation = Rc::new(RefCell::new(None::<PendingPointerActivation>));
         let was_selected = Rc::new(Cell::new(false));

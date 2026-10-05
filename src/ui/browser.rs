@@ -1042,6 +1042,10 @@ impl BrowserView {
         if mode == previous {
             return;
         }
+        if mode == BrowserMode::Columns {
+            self.state.cancel_peek();
+            self.state.peek_anchor.take();
+        }
         // The rebuilt view has a different displayed order for the same anchor.
         self.state.browser.leave_visual();
         let searching = self.state.listing_search_showing();
