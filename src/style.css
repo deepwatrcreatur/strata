@@ -2378,6 +2378,7 @@ paned > separator {
 
 .preview-title {
   color: @strata_text;
+  font-size: 0.9em;
   font-weight: 700;
 }
 
@@ -2422,6 +2423,10 @@ paned > separator {
   border-color: transparent;
   color: @strata_dim_text;
   opacity: 0.46;
+}
+
+.preview-metadata {
+  margin-top: -0.1em;
 }
 
 .preview-metadata label {
