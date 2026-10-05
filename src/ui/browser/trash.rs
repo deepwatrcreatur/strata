@@ -176,6 +176,7 @@ impl ViewState {
     }
 
     pub(super) fn clear_delete_animation(&self) {
+        self.delete_dissolve_request.set(None);
         self.pending_delete_dissolve.take();
         self.pending_file_operation_animation.take();
     }
