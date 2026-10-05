@@ -40,6 +40,7 @@ impl Header {
         preferences: &Rc<PreferenceManager>,
     ) -> Self {
         let widget = gtk::HeaderBar::new();
+        widget.add_css_class("browser-header");
         widget.set_show_title_buttons(false);
         let sidebar_toggle = gtk::ToggleButton::builder()
             .active(true)
