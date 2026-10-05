@@ -6,6 +6,7 @@ from __future__ import annotations
 import time
 
 import pytest
+from gi.repository import Atspi
 
 from harness.modes import ALL_MODES
 
@@ -55,11 +56,14 @@ def test_single_click_opens_a_folder_in_a_clipped_parent_column(
     strata.pointer.connection.button(1, True)
     try:
         if reveal_during_press:
-            # Pan under a parked pointer to exercise camera motion independently
-            # of toolkit-specific focus scrolling on mouse-down.
-            for _ in range(3):
-                strata.pointer.connection.button(6, True)
-                strata.pointer.connection.button(6, False)
+            # Move the camera without a wheel gesture, which legitimately
+            # cancels the pending click on some GTK versions.
+            scrollbar = next(
+                node for _, node in strata.window.walk()
+                if node.role == "scroll bar" and node.has_state("horizontal")
+            )
+            value = Atspi.Accessible.get_value_iface(scrollbar.accessible)
+            assert Atspi.Value.set_current_value(value, 0.0)
         time.sleep(0.2)
     finally:
         strata.pointer.connection.button(1, False)

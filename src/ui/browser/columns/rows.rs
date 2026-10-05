@@ -372,9 +372,10 @@ pub(super) fn column_rows(
             was_selected_for_press.set(false);
             press_moved_for_press.set(false);
             // Focusing a parent can scroll the row beneath a stationary pointer.
-            let Some(press) = gesture.current_event().and_then(|event| event.position()) else {
-                return;
-            };
+            let press = gesture
+                .current_event()
+                .and_then(|event| event.position())
+                .unwrap_or((x, y));
             press_origin_for_press.set(press);
             if let Some(state) = weak_state_for_click.upgrade() {
                 state.cancel_click_rename();
@@ -578,11 +579,12 @@ pub(super) fn column_rows(
         });
         let weak_state_for_release = weak_state.clone();
         let search_results_for_release = search_results_for_factory.clone();
-        selection_click.connect_released(move |gesture, count, _, _| {
+        selection_click.connect_released(move |gesture, count, x, y| {
             let pending = pending_activation_for_release.take();
-            let Some((x, y)) = gesture.current_event().and_then(|event| event.position()) else {
-                return;
-            };
+            let (x, y) = gesture
+                .current_event()
+                .and_then(|event| event.position())
+                .unwrap_or((x, y));
             if pending.is_none()
                 && count == 1
                 && !press_moved_for_release.get()
