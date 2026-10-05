@@ -46,6 +46,8 @@ thread_local! {
     static SETTLE_VIEWS: RefCell<HashMap<usize, ViewSettle>> = RefCell::new(HashMap::new());
     static TRACKED_CUSTOMIZED_ICONS: RefCell<HashMap<usize, TrackedCustomizedIcon>> =
         RefCell::new(HashMap::new());
+    static TRACKED_CUSTOMIZED_IMAGES: RefCell<HashMap<usize, TrackedCustomizedImage>> =
+        RefCell::new(HashMap::new());
     static TRACKED_THUMBNAILS: RefCell<HashMap<usize, TrackedThumbnail>> = RefCell::new(HashMap::new());
     static REFRESHING_CUSTOMIZED_ICONS: Cell<bool> = const { Cell::new(false) };
 }
@@ -59,6 +61,19 @@ struct TrackedCustomizedIcon {
     path: PathBuf,
     icon: String,
     customized: bool,
+}
+
+struct TrackedCustomizedImage {
+    image: glib::WeakRef<gtk::Image>,
+    path: PathBuf,
+    default_icon: String,
+    kind: ImageIconKind,
+}
+
+#[derive(Clone, Copy)]
+enum ImageIconKind {
+    Default,
+    Folder,
 }
 
 struct ActiveRequest {
@@ -269,6 +284,34 @@ impl CachedThumbnail {
             Self::Failed(_) => 0,
         }
     }
+}
+
+/// Cache-only lookup: a placeholder must not queue thumbnail work.
+pub(in crate::ui) fn cached_thumbnail(entry: &FileEntry) -> Option<gdk::Texture> {
+    let key = ThumbnailKey {
+        path: entry.local_thumbnail_path()?.to_path_buf(),
+        modified: known_metadata(&entry.modified_unix_seconds),
+        file_size: known_metadata(&entry.size),
+        thumbnail_size: super::thumbnail_cache::CANONICAL_MAX_EDGE,
+    };
+    match THUMBNAIL_CACHE.with(|cache| cache.borrow_mut().get(&key)) {
+        Some(CacheHit::Ready(texture)) => Some(texture),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+pub(in crate::ui) fn remember_thumbnail_for_test(entry: &FileEntry, texture: gdk::Texture) {
+    let key = ThumbnailKey {
+        path: entry
+            .local_thumbnail_path()
+            .expect("local entry")
+            .to_path_buf(),
+        modified: known_metadata(&entry.modified_unix_seconds),
+        file_size: known_metadata(&entry.size),
+        thumbnail_size: super::thumbnail_cache::CANONICAL_MAX_EDGE,
+    };
+    THUMBNAIL_CACHE.with(|cache| cache.borrow_mut().insert(key, texture));
 }
 
 pub(super) fn preserve_renamed_thumbnail(from: &crate::model::Location, entry: &FileEntry) {
@@ -1166,13 +1209,44 @@ pub(super) fn show_customized_icon_image(
     fallback_icon: &str,
     size: i32,
 ) {
+    show_path_icon_image(image, path, fallback_icon, size, ImageIconKind::Default);
+}
+
+pub(super) fn show_customized_folder_image(
+    image: &gtk::Image,
+    path: &Path,
+    default_icon: &str,
+    size: i32,
+) {
+    show_path_icon_image(image, path, default_icon, size, ImageIconKind::Folder);
+}
+
+fn show_path_icon_image(
+    image: &gtk::Image,
+    path: &Path,
+    default_icon: &str,
+    size: i32,
+    kind: ImageIconKind,
+) {
     if image.pixel_size() != size {
         image.set_pixel_size(size);
     }
     if image.width_request() != size || image.height_request() != size {
         image.set_size_request(size, size);
     }
-    apply_path_customization_image(image, path, fallback_icon);
+    apply_path_customization_image(image, path, default_icon, kind);
+    TRACKED_CUSTOMIZED_IMAGES.with_borrow_mut(|images| {
+        images.retain(|_, tracked| tracked.image.upgrade().is_some());
+        images.insert(
+            image.as_ptr() as usize,
+            TrackedCustomizedImage {
+                image: image.downgrade(),
+                path: path.to_path_buf(),
+                default_icon: default_icon.to_owned(),
+                kind,
+            },
+        );
+    });
 }
 
 pub(super) fn cancel_list_item_thumbnails(item: &glib::Object) {
@@ -1211,7 +1285,13 @@ fn set_fallback_icon(
 ) -> (usize, u64) {
     let ids = prepare_thumbnail_target(image, size);
     clear_displayed_thumbnail(image);
-    let (texture, customized) = path_icon_texture(path, icon);
+    let (texture, customized) = path_icon_texture(
+        path,
+        icon,
+        image.icon_pixel_size(),
+        image.scale_factor(),
+        image.icon_context(),
+    );
     image.set_fallback(icon, texture.as_ref());
     if let Some(p) = path {
         register_tracked_icon(image, p, icon, customized);
@@ -1223,9 +1303,24 @@ fn set_fallback_icon(
     ids
 }
 
-fn path_icon_texture(path: Option<&Path>, fallback_icon: &str) -> (Option<gdk::Texture>, bool) {
+fn path_icon_texture(
+    path: Option<&Path>,
+    fallback_icon: &str,
+    size: i32,
+    scale_factor: i32,
+    context: crate::assets::IconContext,
+) -> (Option<gdk::Texture>, bool) {
     let Some(path) = path else {
-        return (crate::assets::primary_icon_paintable(fallback_icon), false);
+        return (
+            crate::assets::sized_icon_paintable(
+                fallback_icon,
+                &crate::assets::primary_icon_color(),
+                size,
+                scale_factor,
+                context,
+            ),
+            false,
+        );
     };
     let preference_manager = super::preferences::PreferenceManager::shared();
     let custom_icon = preference_manager.custom_icon(path);
@@ -1239,7 +1334,13 @@ fn path_icon_texture(path: Option<&Path>, fallback_icon: &str) -> (Option<gdk::T
             .map_or_else(crate::assets::primary_icon_color, |color| {
                 color.hex().to_owned()
             });
-        crate::assets::folder_decoration_paintable(decoration, &color)
+        crate::assets::sized_folder_decoration_paintable(
+            decoration,
+            &color,
+            size,
+            scale_factor,
+            context,
+        )
     } else if let Some(emoji) = custom_icon
         .as_deref()
         .and_then(crate::assets::icons::custom_emoji)
@@ -1248,27 +1349,50 @@ fn path_icon_texture(path: Option<&Path>, fallback_icon: &str) -> (Option<gdk::T
     } else {
         let rendered_icon = custom_icon.as_deref().unwrap_or(fallback_icon);
         if let Some(color) = color {
-            crate::assets::custom_colored_icon_paintable(rendered_icon, color.hex())
+            crate::assets::sized_icon_paintable(
+                rendered_icon,
+                color.hex(),
+                size,
+                scale_factor,
+                context,
+            )
         } else {
-            crate::assets::primary_icon_paintable(rendered_icon)
+            crate::assets::sized_icon_paintable(
+                rendered_icon,
+                &crate::assets::primary_icon_color(),
+                size,
+                scale_factor,
+                context,
+            )
         }
     };
     (texture, customized)
 }
 
 fn apply_path_customization(image: &ThumbnailSlot, path: &Path, fallback_icon: &str) -> bool {
-    let (texture, customized) = path_icon_texture(Some(path), fallback_icon);
+    let (texture, customized) = path_icon_texture(
+        Some(path),
+        fallback_icon,
+        image.icon_pixel_size(),
+        image.scale_factor(),
+        image.icon_context(),
+    );
     image.set_fallback(fallback_icon, texture.as_ref());
     customized
 }
 
-fn apply_path_customization_image(image: &gtk::Image, path: &Path, fallback_icon: &str) -> bool {
+fn apply_path_customization_image(
+    image: &gtk::Image,
+    path: &Path,
+    default_icon: &str,
+    kind: ImageIconKind,
+) -> bool {
     let preference_manager = super::preferences::PreferenceManager::shared();
     let custom_icon = preference_manager.custom_icon(path);
     let color = preference_manager.folder_color(path);
     let customized = custom_icon.is_some() || color.is_some();
 
-    if fallback_icon == crate::assets::icons::FOLDER
+    if (matches!(kind, ImageIconKind::Folder) || default_icon == crate::assets::icons::FOLDER)
         && let Some(decoration) = custom_icon.as_deref()
     {
         let color = color
@@ -1283,7 +1407,7 @@ fn apply_path_customization_image(image: &gtk::Image, path: &Path, fallback_icon
     {
         crate::assets::set_emoji_icon(image, emoji);
     } else {
-        let rendered_icon = custom_icon.as_deref().unwrap_or(fallback_icon);
+        let rendered_icon = custom_icon.as_deref().unwrap_or(default_icon);
         if let Some(color) = color {
             crate::assets::set_custom_colored_icon(image, rendered_icon, color.hex());
         } else {
@@ -1291,6 +1415,29 @@ fn apply_path_customization_image(image: &gtk::Image, path: &Path, fallback_icon
         }
     }
     customized
+}
+
+pub(super) fn refresh_slot_icon(image: &ThumbnailSlot) {
+    if image.texture().is_some() {
+        return;
+    }
+    let tracked = TRACKED_CUSTOMIZED_ICONS.with_borrow(|icons| {
+        icons
+            .get(&(image.as_ptr() as usize))
+            .map(|tracked| (tracked.path.clone(), tracked.icon.clone()))
+    });
+    if let Some((path, icon)) = tracked {
+        apply_path_customization(image, &path, &icon);
+    } else if let Some(icon) = image.fallback_icon() {
+        let (texture, _) = path_icon_texture(
+            None,
+            &icon,
+            image.icon_pixel_size(),
+            image.scale_factor(),
+            image.icon_context(),
+        );
+        image.set_fallback(&icon, texture.as_ref());
+    }
 }
 
 fn register_tracked_icon(image: &ThumbnailSlot, path: &Path, icon: &str, customized: bool) {
@@ -1309,10 +1456,33 @@ fn register_tracked_icon(image: &ThumbnailSlot, path: &Path, icon: &str, customi
 
 pub(super) fn refresh_customized_icons(paths: &[PathBuf]) {
     refresh_tracked_icons(|tracked| paths.iter().any(|candidate| candidate == &tracked.path));
+    refresh_tracked_images(|path| paths.iter().any(|candidate| candidate == path));
 }
 
 pub(super) fn refresh_all_customized_icons() {
     refresh_tracked_icons(|_| true);
+    refresh_tracked_images(|_| true);
+}
+
+fn refresh_tracked_images(matches: impl Fn(&Path) -> bool) {
+    let pending = TRACKED_CUSTOMIZED_IMAGES.with_borrow_mut(|images| {
+        images.retain(|_, tracked| tracked.image.upgrade().is_some());
+        images
+            .values()
+            .filter(|tracked| matches(&tracked.path))
+            .filter_map(|tracked| {
+                Some((
+                    tracked.image.upgrade()?,
+                    tracked.path.clone(),
+                    tracked.default_icon.clone(),
+                    tracked.kind,
+                ))
+            })
+            .collect::<Vec<_>>()
+    });
+    for (image, path, default_icon, kind) in pending {
+        apply_path_customization_image(&image, &path, &default_icon, kind);
+    }
 }
 
 fn refresh_tracked_icons(matches: impl Fn(&TrackedCustomizedIcon) -> bool) {

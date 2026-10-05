@@ -13,6 +13,9 @@ use crate::ui::browser::collection::{
 };
 use crate::ui::browser::context_menu::{install_folder_context_menu, install_item_context_menu};
 use crate::ui::browser::entry::{entry_filter, entry_model_value, format_file_size};
+use crate::ui::browser::find::{
+    HitRanges, highlight_hit_name, highlight_listing_name, search_hit_ranges,
+};
 use crate::ui::browser::pane_header::{
     column_sort_direction_toggle, column_sort_menu, empty_trash_button, pane_new_folder_button,
     pane_refresh_button,
@@ -113,6 +116,7 @@ pub(super) fn install_resize_edges(state: &Rc<ViewState>) {
     state.scroller.add_controller(motion);
 
     let resize = gtk::GestureDrag::new();
+    resize.set_name(Some("column-resize"));
     resize.set_button(1);
     resize.set_propagation_phase(gtk::PropagationPhase::Capture);
     let active = Rc::new(RefCell::new(None::<(gtk::Box, i32, f64)>));
@@ -146,6 +150,7 @@ pub(super) fn install_resize_edges(state: &Rc<ViewState>) {
                 .map(|column| max_child_natural_width(&column))
                 .unwrap_or(COLUMN_WIDTH);
             shell.set_size_request(max_natural.max(COLUMN_WIDTH), -1);
+            remember_column_width(&state, &shell);
             gesture.set_state(gtk::EventSequenceState::Claimed);
             return;
         }
@@ -173,9 +178,12 @@ pub(super) fn install_resize_edges(state: &Rc<ViewState>) {
         shell.set_size_request(resized_column_width(*initial, offset_x), -1);
     });
     resize.connect_drag_end(move |_, _, _| {
-        active_for_end.borrow_mut().take();
+        let resized = active_for_end.borrow_mut().take();
         if let Some(state) = weak_for_end.upgrade() {
             state.column_resizing.set(false);
+            if let Some((shell, _, _)) = resized {
+                remember_column_width(&state, &shell);
+            }
         }
     });
     let weak_for_cancel = Rc::downgrade(state);
@@ -263,9 +271,37 @@ pub(super) struct ColumnView {
     query_binding: Rc<RefCell<Option<super::collection::FilterQueryBinding>>>,
     pub(super) search_model: gtk::StringList,
     pub(super) recursive_search_active: Rc<Cell<bool>>,
+    hits: Rc<RefCell<ColumnHits>>,
+}
+
+#[derive(Default)]
+pub(super) struct ColumnHits {
+    pub(super) ranges: HitRanges,
+    pub(super) recursive: bool,
 }
 
 impl ColumnView {
+    pub(super) fn refresh_name_highlights(&self, find: Option<&str>) {
+        let searching = self.recursive_search_active.get();
+        let results = self.search_results.borrow();
+        let hits = self.hits.borrow();
+        let filter = self.map.query();
+        for bound in self.bound_rows.borrow().iter() {
+            let (Some(label), Some(item)) = (bound.rename_label.upgrade(), bound.item.upgrade())
+            else {
+                continue;
+            };
+            if searching {
+                let hit = results
+                    .get(item.position() as usize)
+                    .and_then(|hit| hits.ranges.get(&hit.path));
+                highlight_hit_name(label.upcast_ref(), find, hit.map(Vec::as_slice));
+            } else {
+                highlight_listing_name(label.upcast_ref(), find, &filter);
+            }
+        }
+    }
+
     pub(super) fn flush_filter_query(&self) {
         if let Some(binding) = self.query_binding.borrow().as_ref() {
             binding.flush();
@@ -603,6 +639,27 @@ fn animate_column_entry(column: &gtk::Box, generation: &Rc<Cell<u64>>) {
     });
 }
 
+fn remember_column_width(state: &ViewState, shell: &gtk::Box) {
+    let preferences = crate::ui::preferences::PreferenceManager::shared();
+    let width = (f64::from(shell.width_request()) / preferences.interface_scale()).round() as i32;
+    let width = Some(width.max(COLUMN_WIDTH));
+    if state.browser.is_chooser_mode() {
+        preferences.set_chooser_column_width(width);
+    } else {
+        preferences.set_browser_column_width(width);
+    }
+}
+
+fn initial_column_width(state: &ViewState) -> i32 {
+    let preferences = crate::ui::preferences::PreferenceManager::shared();
+    let saved = if state.browser.is_chooser_mode() {
+        preferences.chooser_column_width()
+    } else {
+        preferences.browser_column_width()
+    };
+    saved.map_or(COLUMN_WIDTH, |width| width.max(COLUMN_WIDTH))
+}
+
 fn resized_column_width(initial_width: i32, horizontal_offset: f64) -> i32 {
     (f64::from(initial_width) + horizontal_offset)
         .round()
@@ -836,12 +893,15 @@ impl ViewState {
         heading.set_hexpand(true);
         heading.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
         heading.set_max_width_chars(1);
-        heading.set_tooltip_text(Some(&location.display_path()));
+        crate::ui::accessibility::set_description(&heading, Some(&location.display_path()));
         let truncated_hint = crate::assets::primary_icon(crate::assets::icons::TRIANGLE_ALERT, 16);
         truncated_hint.add_css_class("column-truncated-hint");
-        truncated_hint.set_tooltip_text(Some(
-            "This directory has more entries than could be loaded; showing a partial listing.",
-        ));
+        crate::ui::accessibility::set_description(
+            &truncated_hint,
+            Some(
+                "This directory has more entries than could be loaded; showing a partial listing.",
+            ),
+        );
         truncated_hint.set_visible(false);
         heading_box.append(&heading);
         heading_box.append(&truncated_hint);
@@ -938,6 +998,7 @@ impl ViewState {
         );
         let selection = gtk::MultiSelection::new(Some(filtered_model.clone()));
         let recursive_search_active = Rc::new(Cell::new(false));
+        let hits = Rc::new(RefCell::new(ColumnHits::default()));
         let syncing_selection = Rc::new(Cell::new(false));
         let modified_selection = Rc::new(Cell::new(false));
         let focused_filtered = Rc::new(Cell::new(None::<u32>));
@@ -1038,10 +1099,11 @@ impl ViewState {
         let selection_for_search = selection.clone();
         let syncing_for_search = syncing_selection.clone();
         let filter_query_for_search = filter_query.clone();
+        let hits_for_search = hits.clone();
         let query_binding = bind_filter_query(
             &filter_entry,
             &search_session,
-            move |text, recursive, restart| {
+            move |text, scope, restart| {
                 if restart {
                     session_for_changed.cancel();
                     let changed = search::update_results(
@@ -1074,6 +1136,7 @@ impl ViewState {
                         &model_for_search,
                     );
                     if let Some(state) = weak_state_for_search.upgrade() {
+                        state.refresh_name_highlights();
                         state.notify_filter_results_changed();
                     }
                     return;
@@ -1100,6 +1163,7 @@ impl ViewState {
                         &filter_query_for_search,
                         fold_for_search(&text),
                     );
+                    state.refresh_name_highlights();
                     state.notify_filter_results_changed();
                     return;
                 };
@@ -1120,11 +1184,14 @@ impl ViewState {
                 let syncing = syncing_for_search.clone();
                 let browser = Rc::downgrade(&state.browser);
                 let weak_state = weak_state_for_search.clone();
+                let hits = hits_for_search.clone();
+                let root = path.clone();
                 session_for_changed.update(
                     crate::ui::search_session::SearchInput {
                         root: path,
                         show_hidden,
-                        recursive,
+                        scope,
+                        refused: Default::default(),
                     },
                     &query,
                     restart,
@@ -1149,9 +1216,18 @@ impl ViewState {
                             batch.items,
                             batch.has_more,
                         );
+                        hits.replace(ColumnHits {
+                            ranges: if scope.fuzzy() {
+                                search_hit_ranges(&batch.query, &root, &items)
+                            } else {
+                                HitRanges::new()
+                            },
+                            recursive: scope.recursive(),
+                        });
                         if search::update_results(&sm, &results, &selection, &syncing, items) {
                             state.notify_search_selection_changed();
                         }
+                        state.refresh_name_highlights();
                         state.notify_filter_results_changed();
                     }),
                 );
@@ -1170,6 +1246,7 @@ impl ViewState {
             &modified_selection,
             &recursive_search_active,
             &search_results,
+            &hits,
         );
 
         let list = gtk::ListView::new(Some(selection.clone()), Some(factory));
@@ -1401,7 +1478,10 @@ impl ViewState {
             scroll: scroll.clone(),
             overlay: self.overlay.clone(),
             targets: marquee_targets.clone(),
-            is_item: crate::ui::marquee::item_bounds_predicate(marquee_targets),
+            is_item: crate::ui::marquee::item_content_predicate(
+                marquee_targets,
+                Rc::new(crate::ui::pointer::hits_item_content),
+            ),
             clear_selection: Rc::new(move || {
                 if let Some(state) = weak_for_clear.upgrade() {
                     state.clear_column_selections();
@@ -1539,7 +1619,7 @@ impl ViewState {
         });
         shell.add_controller(filter_focus);
 
-        shell.set_size_request(COLUMN_WIDTH, -1);
+        shell.set_size_request(initial_column_width(self), -1);
         let previous_scale = Cell::new(1.0);
         crate::ui::preferences::PreferenceManager::shared().bind_interface_scale(
             &shell,
@@ -1654,6 +1734,7 @@ impl ViewState {
             query_binding: Rc::new(RefCell::new(Some(query_binding))),
             search_model,
             recursive_search_active,
+            hits,
         });
 
         if let Some(column) = self.columns.borrow().last() {
@@ -1763,11 +1844,24 @@ impl ViewState {
     }
 
     pub(super) fn reveal_column(self: &Rc<Self>, shell: gtk::Box) {
+        // Trailing columns borrow preview space without displacing the active column.
+        let shell = {
+            let columns = self.columns.borrow();
+            let depth = columns.iter().position(|column| column.shell == shell);
+            match (depth, self.browser.active_depth()) {
+                (Some(depth), Some(active)) if depth > active => columns
+                    .get(active)
+                    .map_or(shell, |column| column.shell.clone()),
+                _ => shell,
+            }
+        };
         let animation_id = self.horizontal_scroll_generation.get().saturating_add(1);
         self.horizontal_scroll_generation.set(animation_id);
         self.columns_widget.set_margin_end(0);
         let weak = Rc::downgrade(self);
         let measured_shell = shell.downgrade();
+        // Wait for the preview slot to resize before measuring the viewport.
+        let laid_out = std::cell::Cell::new(false);
         let _tick = self.scroller.add_tick_callback(move |_, _| {
             let Some(state) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
@@ -1781,7 +1875,10 @@ impl ViewState {
                 return glib::ControlFlow::Break;
             }
             let adjustment = state.scroller.hadjustment();
-            if measured_shell.width() <= 0 || adjustment.page_size() <= 0.0 {
+            if !laid_out.replace(true)
+                || measured_shell.width() <= 0
+                || adjustment.page_size() <= 0.0
+            {
                 return glib::ControlFlow::Continue;
             }
             let depth = state

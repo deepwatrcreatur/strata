@@ -176,7 +176,11 @@ impl Dispatcher {
         } else {
             matches!(event.key, Key::b | Key::B)
         };
-        if event.control() && !event.shift() && toggles_sidebar {
+        if event.control()
+            && !event.shift()
+            && event.without(Modifiers::ALT_MASK)
+            && toggles_sidebar
+        {
             toggle.set_active(!toggle.is_active());
             return Some(Propagation::Stop);
         }
@@ -241,6 +245,16 @@ impl Dispatcher {
             self.view.create_new_folder();
             return Some(Propagation::Stop);
         }
+        if event.control()
+            && event.alt()
+            && event.without(Modifiers::SHIFT_MASK | Modifiers::SUPER_MASK)
+            && matches!(event.key, Key::n | Key::N)
+        {
+            if !self.view.create_new_folder_for_selection() {
+                self.view.create_new_folder();
+            }
+            return Some(Propagation::Stop);
+        }
         self.clipboard_command(event)
             .or_else(|| self.browser_commands(browser, event))
     }
@@ -284,7 +298,8 @@ impl Dispatcher {
     pub(super) fn context_menu_command(&self, event: &KeyEvent) -> KeyResult {
         if is_context_menu_shortcut(event.key, event.modifiers)
             && !event.text_has_focus()
-            && self.view.open_focused_context_menu()
+            && (super::sidebar::open_sidebar_context_menu(&self.sidebar.widget)
+                || self.view.open_focused_context_menu())
         {
             return Some(Propagation::Stop);
         }

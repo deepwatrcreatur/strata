@@ -9,7 +9,8 @@ pub(in crate::ui) fn non_default_preferences() -> Preferences {
     Preferences {
         mode: "theme".into(),
         theme: "nord".into(),
-        folder_peeking: false,
+        omarchy_variant: OmarchyVariant::Darker,
+        folder_peeking: true,
         single_click_previews: false,
         columns_mirror_selection: false,
         render_documents_by_default: false,
@@ -39,6 +40,7 @@ pub(in crate::ui) fn non_default_preferences() -> Preferences {
             "home".into(),
             "videos".into(),
             "pictures".into(),
+            "music".into(),
             "downloads".into(),
             "documents".into(),
             "desktop".into(),
@@ -50,8 +52,10 @@ pub(in crate::ui) fn non_default_preferences() -> Preferences {
         sidebar_show_desktop: false,
         sidebar_show_documents: false,
         sidebar_show_downloads: false,
+        sidebar_show_music: false,
         sidebar_show_pictures: false,
         sidebar_show_videos: false,
+        sidebar_expanded: false,
         show_hidden: true,
         text_size: TextSize::new(24),
         interface_renderer: InterfaceRenderer::Cairo,
@@ -66,6 +70,8 @@ pub(in crate::ui) fn non_default_preferences() -> Preferences {
         auto_refresh_interval: 600,
         thumbnail_workers: 6,
         icons_thumbnail_size: 128,
+        chooser_column_width: Some(420),
+        browser_column_width: Some(380),
         cross_volume_drop_strategy: CrossVolumeDropStrategy::Move.as_str().into(),
         open_folder_after_drop: true,
         date_format: "iso".into(),
@@ -76,6 +82,7 @@ pub(in crate::ui) fn non_default_preferences() -> Preferences {
             "/fixture/folder".into(),
             crate::assets::icons::HOME.into(),
         )]),
+        device_labels: HashMap::from([("volume:fixture-kingston".into(), "Research drive".into())]),
         send_to_recent_destinations: HashMap::from([
             (
                 "volume:fixture-kingston".into(),
@@ -86,6 +93,20 @@ pub(in crate::ui) fn non_default_preferences() -> Preferences {
                 vec![PathBuf::from("Backup")],
             ),
         ]),
+        browser_list_columns: Some(ListColumns {
+            name: None,
+            mode: 110,
+            size: 80,
+            kind: 95,
+            modified: 140,
+        }),
+        chooser_list_columns: Some(ListColumns {
+            name: Some(280),
+            mode: 100,
+            size: 72,
+            kind: 90,
+            modified: 130,
+        }),
     }
 }
 

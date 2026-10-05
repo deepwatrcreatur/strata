@@ -6,6 +6,7 @@ mod document;
 pub(crate) mod document_media;
 pub(crate) mod docx;
 mod file_source;
+pub(crate) mod image_conversion;
 mod install_source;
 pub(crate) mod jobs;
 mod listeners;
@@ -14,8 +15,11 @@ pub(crate) mod model_preview;
 mod native_fs;
 mod navigation_history;
 mod operations;
+pub(crate) mod package_manager;
+mod path_match;
 mod preview;
 mod release_channel;
+mod remote_download;
 pub(crate) mod rtf;
 mod search;
 pub(crate) mod table;
@@ -32,14 +36,15 @@ pub(crate) use document::{
     DocumentSpanStyle, DocumentTableCellLayout, DocumentUnit, DocumentUnitKind, document_kind,
     has_web_scheme, layout_document, parse_document, parse_markdown,
 };
+pub(crate) use file_source::sanitize_failure_message;
 pub use file_source::{
     DirectoryChange, DirectoryEvent, DirectoryRequest, FileSource, LoadHandle,
     LocationValidationError, MetadataOutcome, MetadataRequest, MetadataUpdate, RequestId,
     UriCredentials, backend_unavailable_message, sanitize_uri_credentials,
     validate_uri_credentials,
 };
-pub(crate) use install_source::ensure_self_managed;
 pub use install_source::{InstallSource, ManagedInstall};
+pub(crate) use install_source::{ensure_self_managed, installed_executable};
 pub use jobs::{
     ActionEventSink, ActionRunEvent, ActionRunRequest, ActionRunner, CancelHandle,
     InvocationSource, JobId, JobRequest, JobService, JobSnapshot, JobStatus, ScriptProgress,
@@ -61,6 +66,7 @@ pub use operations::{
     RestoreSource, RestoreTrashItem, TransferConflict, TrashedOriginal, UndoCopyRequest,
     UndoMergeRequest, UndoMoveItem, UndoMoveRequest, UndoRenameRequest, validate_basename,
 };
+pub(crate) use path_match::{PathMatcher, PathQuery};
 pub use preview::{
     ArchiveDirectory, ArchiveFileEntry, ArchiveNode, ArchivePreviewTree, MediaPreviewSize,
     ModelPreviewStage, PdfTextLayer, Preview, PreviewContent, PreviewEvent, PreviewProvider,
@@ -82,14 +88,19 @@ pub(crate) use transfer_action::{
 // business calling it. Widening this re-export would make that bypass
 // reachable from UI code.
 pub(crate) use release_channel::{BuildKind, Channel, Version};
+pub(crate) use remote_download::{
+    RemoteDownload, download_remote, prune_stale_downloads, remote_file_name, remote_file_url,
+};
 pub(crate) use search::{RESULT_LIMIT as SEARCH_RESULT_LIMIT, refresh_search_indexes_for_rename};
 pub(crate) use search::{
-    SearchCoverage, SearchEvent, SearchHandle, SearchItem, filter_name_matches,
-    filter_query_allows_typos, fold_for_search, index_filter, index_tree, index_trees,
+    RefusedFolders, SearchCoverage, SearchEvent, SearchHandle, SearchItem, filter_name_matches,
+    filter_query_allows_typos, fold_for_search, index_filter, index_folder_paths, index_paths,
+    index_trees,
 };
 pub(crate) use update_check::{
     ReleaseMetadata, ReleaseNotes, UpdateCheck, check_for_updates, fetch_release_notes,
 };
 pub(crate) use update_install::{
-    InstallRequest, UpdateInstall, UpdateMethod, install_update, update_method,
+    InstallCancel, InstallRequest, UpdateInstall, UpdateMethod, install_update, rollback_path,
+    update_method,
 };

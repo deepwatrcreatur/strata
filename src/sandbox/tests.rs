@@ -166,7 +166,33 @@ fn sandbox_command_starts_absolute_bubblewrap() {
         .join(" ");
     assert!(joined.contains("--unshare-all"));
     assert!(joined.contains("--clearenv"));
-    assert!(joined.contains("--setenv PATH /usr/bin"));
+    let arguments: Vec<_> = command.get_args().collect();
+    let path = option_env!("STRATA_SANDBOX_PATH").unwrap_or("/usr/bin");
+    let root = option_env!("STRATA_SANDBOX_ROOT").unwrap_or("/usr");
+    let prlimit = option_env!("STRATA_SANDBOX_PRLIMIT").unwrap_or("/usr/bin/prlimit");
+    assert!(
+        arguments
+            .windows(3)
+            .any(|args| args == ["--setenv", "PATH", path])
+    );
+    assert!(
+        arguments
+            .windows(3)
+            .any(|args| args == ["--ro-bind", root, root])
+    );
+    assert!(
+        arguments
+            .windows(3)
+            .any(|args| args == ["--", prlimit, "--as=2147483648"])
+    );
+    match option_env!("STRATA_SANDBOX_GDK_PIXBUF_MODULE_FILE") {
+        Some(loaders) => assert!(
+            arguments
+                .windows(3)
+                .any(|args| { args == ["--setenv", "GDK_PIXBUF_MODULE_FILE", loaders] })
+        ),
+        None => assert!(!arguments.contains(&std::ffi::OsStr::new("GDK_PIXBUF_MODULE_FILE"))),
+    }
 }
 
 #[test]
@@ -321,7 +347,9 @@ fn media_previews_use_bounded_streaming_instead_of_driver_wide_resource_limits()
         .map(|argument| argument.to_string_lossy())
         .collect::<Vec<_>>()
         .join(" ");
-    assert!(!joined.contains("/usr/bin/prlimit"));
+    assert!(!command.get_args().any(|argument| {
+        argument == option_env!("STRATA_SANDBOX_PRLIMIT").unwrap_or("/usr/bin/prlimit")
+    }));
     assert!(!joined.contains("--as="));
     assert!(!joined.contains("--cpu="));
     assert!(!joined.contains("--fsize="));
@@ -729,6 +757,12 @@ fn video_thumbnails_execute_the_helper_inside_the_bounded_sandbox() {
 
 #[test]
 fn accepts_only_bounded_png_outputs_and_never_compressed_media() {
+    assert!(valid_output(ParseOperation::AudioCover, b"null"));
+    assert!(!valid_output(ParseOperation::PreviewImage, b"null"));
+    assert!(!valid_output(ParseOperation::AudioCover, b""));
+    assert!(!valid_output(ParseOperation::AudioCover, b"null trailing"));
+    assert!(valid_output(ParseOperation::AudioCover, &png(800, 800)));
+    assert!(!valid_output(ParseOperation::AudioCover, &png(801, 800)));
     assert!(valid_output(ParseOperation::ThumbnailImage, &png(256, 256)));
     assert!(!valid_output(ParseOperation::ThumbnailImage, &png(257, 1)));
     assert!(valid_output(ParseOperation::PreviewImage, &png(800, 800)));

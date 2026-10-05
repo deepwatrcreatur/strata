@@ -48,6 +48,10 @@ pub(super) struct ColumnRows {
     pub(super) scrolling: Rc<Cell<bool>>,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "rows read the column's directory map, selection, and search hits it owns"
+)]
 pub(super) fn column_rows(
     state: &Rc<ViewState>,
     depth: usize,
@@ -56,6 +60,7 @@ pub(super) fn column_rows(
     modified_selection: &Rc<Cell<bool>>,
     recursive_search_active: &Rc<Cell<bool>>,
     search_results: &Rc<RefCell<Vec<SearchItem>>>,
+    hits: &Rc<RefCell<super::ColumnHits>>,
 ) -> ColumnRows {
     let scrolling = Rc::new(Cell::new(false));
     let factory = gtk::SignalListItemFactory::new();
@@ -160,6 +165,7 @@ pub(super) fn column_rows(
 
         item.set_child(Some(&row));
         let pending_activation = Rc::new(RefCell::new(None::<PendingPointerActivation>));
+        let was_selected = Rc::new(Cell::new(false));
         let mut content_drag: Option<gtk::DragSource> = None;
         if weak_state.upgrade().is_some_and(|state| state.interactive) {
             let drag = gtk::DragSource::builder()
@@ -173,11 +179,14 @@ pub(super) fn column_rows(
             let search_active_for_drag = search_active_for_factory.clone();
             let search_results_for_drag = search_results_for_factory.clone();
             let selection_for_drag = selection_for_rows.clone();
+            let was_selected_for_drag = was_selected.clone();
             drag.connect_prepare(move |source, x, y| {
                 let prepare_row = prepare_row.upgrade()?;
                 if prepare_row
                     .pick(x, y, gtk::PickFlags::DEFAULT)
                     .is_some_and(|target| crate::ui::focus_navigation::editable(&target))
+                    || (!was_selected_for_drag.get()
+                        && !crate::ui::pointer::hits_item_content(prepare_row.upcast_ref(), x, y))
                 {
                     return None;
                 }
@@ -376,7 +385,6 @@ pub(super) fn column_rows(
         let pending_activation_for_motion = pending_activation.clone();
         let pending_activation_for_release = pending_activation.clone();
         let pending_activation_for_cancel = pending_activation;
-        let was_selected = Rc::new(Cell::new(false));
         let was_selected_for_press = was_selected.clone();
         let was_selected_for_release = was_selected.clone();
         let sequence = crate::ui::collection_interaction::PointerSequence::default();
@@ -714,6 +722,7 @@ pub(super) fn column_rows(
     let weak_state_for_bind = Rc::downgrade(state);
     let search_active_for_bind = recursive_search_active.clone();
     let search_results_for_bind = search_results.clone();
+    let hits_for_bind = hits.clone();
     let rows_for_bind = bound_rows.clone();
     let scrolling_for_bind = scrolling.clone();
     factory.connect_bind(move |_, item| {
@@ -817,23 +826,33 @@ pub(super) fn column_rows(
         } else {
             label.set_opacity(1.0);
         }
-        crate::ui::browser::find::highlight_name(
-            label.upcast_ref(),
-            state
-                .as_ref()
-                .and_then(|state| state.find_highlight())
-                .as_deref(),
-        );
+        let hits = hits_for_bind.borrow();
+        let find = state.as_ref().and_then(|state| state.find_highlight());
+        if searching {
+            let hit = search_results_for_bind
+                .borrow()
+                .get(item.position() as usize)
+                .and_then(|hit| hits.ranges.get(&hit.path).cloned());
+            crate::ui::browser::find::highlight_hit_name(
+                label.upcast_ref(),
+                find.as_deref(),
+                hit.as_deref(),
+            );
+        } else {
+            crate::ui::browser::find::highlight_listing_name(
+                label.upcast_ref(),
+                find.as_deref(),
+                &map_for_bind.query(),
+            );
+        }
         let origin = entry
             .as_ref()
             .filter(|_| searching)
             .map(|entry| entry.location.display_path());
         path.set_label(origin.as_deref().unwrap_or_default());
-        path.set_visible(
-            origin.is_some()
-                && crate::ui::preferences::PreferenceManager::shared().filter_include_subfolders(),
-        );
-        row.set_tooltip_text(origin.as_deref());
+        path.set_visible(origin.is_some() && hits.recursive);
+        row.set_widget_name(origin.as_deref().unwrap_or("file-row"));
+        crate::ui::accessibility::set_description(&row, origin.as_deref());
         let active = entry.as_ref().is_some_and(|entry| {
             browser
                 .as_ref()

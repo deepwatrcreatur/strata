@@ -3,6 +3,7 @@ import io
 import shutil
 import tarfile
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -18,25 +19,19 @@ def extract_archive(strata, archive_name, activation):
         strata.open_context_menu(archive_name)
         strata.choose_menu_item(activation)
         if activation == "Extract to…":
-            dialog = strata.wait_for_dialog()
-            crumb = strata.wait(
-                lambda: dialog.find(role="button", name=strata.fixture.root.name),
-                "the current destination breadcrumb",
-            )
-            strata.pointer.click(crumb)
-            field = strata.editable_field()
-            strata.keyboard.press("ctrl+a")
-            strata.keyboard.type_text(str(strata.fixture.root))
-            strata.wait(lambda: field.text == str(strata.fixture.root), "extraction destination")
-            strata.keyboard.press("Return")
+            chooser = strata.destination_chooser("Extract to")
+            strata.confirm_destination(chooser, "Extract here")
 
 
 @pytest.mark.preferences(
     list_file_clicks=2, grid_file_clicks=2, explorer_file_clicks=2,
 )
 @pytest.mark.parametrize("format,activation", [
-    ("zip", "keyboard"), ("zip", "double-click"),
-    ("tar.gz", "keyboard"), ("tar.gz", "double-click"),
+    pytest.param("zip", "keyboard", marks=pytest.mark.preferences(browser_mode="list")),
+    pytest.param("zip", "keyboard", marks=pytest.mark.preferences(browser_mode="icons")),
+    ("zip", "double-click"),
+    pytest.param("tar.gz", "keyboard", marks=pytest.mark.preferences(browser_mode="list")),
+    ("tar.gz", "double-click"),
     ("zip", "Extract here"), ("zip", "Extract to…"),
 ])
 def test_archive_activation_extracts_to_subfolder(strata, activation, format):
@@ -48,13 +43,22 @@ def test_archive_activation_extracts_to_subfolder(strata, activation, format):
     if format == "zip":
         with zipfile.ZipFile(fixture.path(archive_name), "w") as archive:
             for member, data in members:
-                archive.writestr(member, data)
+                info = zipfile.ZipInfo(member, date_time=(2001, 9, 9, 1, 46, 40))
+                info.external_attr = 0o100755 << 16
+                archive.writestr(info, data)
+        # A DOS time without an extended timestamp is local time.
+        modified = int(datetime(2001, 9, 9, 1, 46, 40).timestamp())
     else:
+        modified = 1_000_000_000
         with tarfile.open(fixture.path(archive_name), "w:gz") as archive:
             for member, data in members:
                 info = tarfile.TarInfo(member)
                 info.size = len(data)
+                info.mode = 0o755
+                info.mtime = modified
                 archive.addfile(info, io.BytesIO(data))
+    fixture.path("activated.txt").write_text("pre-existing\n")
+    strata.entry("activated.txt")
     strata.entry(archive_name)
 
     extract_archive(strata, archive_name, activation)
@@ -64,12 +68,18 @@ def test_archive_activation_extracts_to_subfolder(strata, activation, format):
     strata.wait(lambda: extracted.exists(), "archive activation to bundle spilled members")
     strata.wait(lambda: strata.dialog() is None, "extraction progress dismissal")
     assert extracted.read_text() == contents
+    assert extracted.stat().st_mode & 0o111 == 0o111
+    assert int(extracted.stat().st_mtime) == modified
     assert (subfolder / "nested/second.txt").read_bytes() == b"second member\n"
-    assert not fixture.path("activated.txt").exists()
+    assert fixture.path("activated.txt").read_text() == "pre-existing\n"
+    assert not (subfolder / "activated (2).txt").exists()
     assert not fixture.path("nested").exists()
     assert fixture.path(archive_name).exists()
     assert strata.pane().name == fixture.root.name
     strata.entry("activation")
+    if activation != "Extract to…":
+        strata.wait_for_selection(["activation"], fixture.root.name)
+        strata.wait_for_focused_entry("activation")
     extracted.write_text("keep existing edits\n")
     for suffix in [1, 2]:
         extract_archive(strata, archive_name, activation)
@@ -79,6 +89,9 @@ def test_archive_activation_extracts_to_subfolder(strata, activation, format):
         assert fresh.read_text() == contents
         assert extracted.read_text() == "keep existing edits\n"
         strata.entry(f"activation ({suffix})")
+        if activation != "Extract to…":
+            strata.wait_for_selection([f"activation ({suffix})"], fixture.root.name)
+            strata.wait_for_focused_entry(f"activation ({suffix})")
 
 
 @pytest.mark.preferences(
@@ -98,5 +111,7 @@ def test_archive_activation_extracts_a_single_root_archive_verbatim(strata, acti
     strata.wait(lambda: extracted.exists(), "single-root archive to extract verbatim")
     strata.wait(lambda: strata.dialog() is None, "extraction progress dismissal")
     assert extracted.read_text() == "unrar-0.4.0"
+    # RAR 2.9 stores DOS local time.
+    assert int(extracted.stat().st_mtime) == int(datetime(2015, 8, 7, 17, 21, 8).timestamp())
     assert not fixture.path("activation").exists()
     assert fixture.path(archive_name).exists()

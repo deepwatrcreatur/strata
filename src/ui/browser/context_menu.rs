@@ -24,6 +24,7 @@ use std::rc::Rc;
 mod actions;
 mod commands;
 mod keyboard;
+mod presentation;
 
 const CONTEXT_MENU_EDGE_MARGIN: i32 = 16;
 
@@ -171,7 +172,7 @@ fn restore_context_focus(state: &ViewState, depth: usize) {
     }
 }
 
-fn context_search_active(state: &ViewState, depth: usize) -> bool {
+pub(super) fn context_search_active(state: &ViewState, depth: usize) -> bool {
     if state.mode_views.borrow().mode() != BrowserMode::Columns {
         return state
             .mode_views
@@ -828,7 +829,11 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
         ContextHint::Preview,
     );
     let print = item_context_option(crate::assets::icons::PRINTER, "Print", ContextHint::None);
-    let restore = item_context_option(crate::assets::icons::UNDO_2, "Restore", ContextHint::None);
+    let restore = item_context_option(
+        crate::assets::icons::UNDO_2,
+        "Restore",
+        ContextHint::Restore,
+    );
     restore.set_visible(in_trash);
     let pin = item_context_option(
         crate::assets::icons::PIN,
@@ -854,11 +859,16 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
     let move_to = item_context_option(
         crate::assets::icons::FOLDER_INPUT,
         "Move to…",
-        ContextHint::None,
+        ContextHint::MoveTo,
     );
     let copy_to = item_context_option(
         crate::assets::icons::FOLDER_OUTPUT,
         "Copy to…",
+        ContextHint::CopyTo,
+    );
+    let group = item_context_option(
+        crate::assets::icons::FOLDER_PLUS,
+        "New Folder with Selection",
         ContextHint::None,
     );
     let rename = item_context_option(crate::assets::icons::PENCIL, "Rename", ContextHint::Rename);
@@ -914,6 +924,9 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
         "Extract to…",
         ContextHint::None,
     );
+    let group_separator = gtk::Separator::new(gtk::Orientation::Horizontal);
+    single_open.append(&group);
+    single_open.append(&group_separator);
     single_open.append(&open);
     single_open.append(&open_with);
     single_open.append(&preview);
@@ -964,7 +977,7 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
     let restore_multiple = item_context_option(
         crate::assets::icons::UNDO_2,
         "Restore items",
-        ContextHint::None,
+        ContextHint::Restore,
     );
     restore_multiple.set_visible(in_trash);
     let copy_multiple = item_context_option(crate::assets::icons::COPY, "Copy", ContextHint::Copy);
@@ -986,11 +999,16 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
     let move_multiple = item_context_option(
         crate::assets::icons::FOLDER_INPUT,
         "Move to…",
-        ContextHint::None,
+        ContextHint::MoveTo,
     );
     let copy_to_multiple = item_context_option(
         crate::assets::icons::FOLDER_OUTPUT,
         "Copy to…",
+        ContextHint::CopyTo,
+    );
+    let group_multiple = item_context_option(
+        crate::assets::icons::FOLDER_PLUS,
+        "New Folder with Selection",
         ContextHint::None,
     );
     let cut_multiple = item_context_option(crate::assets::icons::SCISSORS, "Cut", ContextHint::Cut);
@@ -1025,6 +1043,9 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
         "Properties",
         ContextHint::Properties,
     );
+    let group_multiple_separator = gtk::Separator::new(gtk::Orientation::Horizontal);
+    multiple_open.append(&group_multiple);
+    multiple_open.append(&group_multiple_separator);
     multiple_open.append(&open_multiple);
     multiple_open.append(&open_with_multiple);
     multiple_open.append(&restore_multiple);
@@ -1163,7 +1184,12 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
             return;
         };
         let context = state.overlay.display().app_launch_context();
-        if let Err(error) = crate::ui::open_with::launch(&app, &selection.files, Some(&context)) {
+        if let Err(error) = crate::ui::open_with::launch(
+            &app,
+            &selection.files,
+            &selection.content_types,
+            Some(&context),
+        ) {
             crate::ui::modal::show_error_dialog(
                 &state.overlay,
                 "Unable to open file",
@@ -1381,6 +1407,11 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
             state.duplicate_entries(&entries);
         });
     }
+    for button in [&group, &group_multiple] {
+        connect_selection_action(button, &popover, state, &target, move |state, entries| {
+            state.new_folder_with_selection(depth, &entries);
+        });
+    }
     for (button, permanent) in [
         (&move_to_trash, in_trash),
         (&trash_multiple, in_trash),
@@ -1542,6 +1573,15 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
             for button in [&cut, &cut_multiple, &move_to, &move_multiple] {
                 button.set_visible(removable);
             }
+            let groupable = removable
+                && !context_search_active(&state, depth)
+                && state.browser.location_at(depth).is_some_and(|location| {
+                    !is_trash_location(&location) && !location.is_recent_location()
+                });
+            group.set_visible(groupable);
+            group_multiple.set_visible(groupable);
+            group_separator.set_visible(groupable);
+            group_multiple_separator.set_visible(groupable);
             let rename_visible = !is_trash_location(&entry.location);
             rename.set_visible(rename_visible);
             let can_compress = entries
@@ -1577,8 +1617,7 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
                     .as_ref()
                     .is_some_and(|handler| handler(&entry.location) == PinStatus::Available),
             );
-            let can_extract = entry.location.native_path().is_some()
-                && ArchiveFormat::from_extension(&entry.display_name).is_some();
+            let can_extract = ArchiveFormat::for_entry(&entry).is_some();
             extract.set_visible(can_extract);
             extract_to.set_visible(can_extract);
             customize.set_visible(
@@ -1839,7 +1878,7 @@ fn item_context_danger_option(icon: &str, label: &str, hint: ContextHint) -> gtk
 }
 
 fn item_context_option_with_icon(icon: gtk::Image, label: &str, hint: ContextHint) -> gtk::Button {
-    let button = crate::ui::accessibility::menu_item_button();
+    let button = presentation::menu_item_button();
     button.add_css_class("item-context-option");
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     icon.add_css_class("item-context-icon");
@@ -1882,7 +1921,7 @@ pub(in crate::ui) fn context_menu_option(
     label: &str,
     hint: ContextHint,
 ) -> gtk::Button {
-    let button = crate::ui::accessibility::menu_item_button();
+    let button = presentation::menu_item_button();
     let (row, _, _) = context_menu_row(icon, label, hint, &button);
     button.add_css_class("folder-context-option");
     button.set_child(Some(&row));
@@ -1926,17 +1965,20 @@ fn context_menu_toggle_option(
 }
 
 fn bind_context_hint(button: &gtk::Button, shortcut: &gtk::Label, label: &str, hint: ContextHint) {
-    let shown = shortcut.clone();
-    let button = button.clone();
+    let button = button.downgrade();
     let label = label.to_owned();
     PreferenceManager::shared().bind_preference(
         shortcut,
-        PreferenceManager::tenxer_mode,
-        move |_, enabled| {
-            let text = shortcut_reference::context_hint_for(hint, enabled);
+        move |preferences| shortcut_reference::context_hint_for(hint, preferences),
+        move |widget, text| {
+            let shown = widget
+                .downcast_ref::<gtk::Label>()
+                .expect("context hint label");
             shown.set_text(text);
             shown.set_visible(!text.is_empty());
-            crate::ui::accessibility::describe_menu_item(&button, &label, text);
+            if let Some(button) = button.upgrade() {
+                crate::ui::accessibility::describe_menu_item(&button, &label, text);
+            }
         },
     );
 }
@@ -1976,7 +2018,9 @@ impl OpenWithSelection {
 }
 
 fn set_open_with_explanation(button: &gtk::Button, explanation: Option<&str>) {
-    button.set_tooltip_text(explanation);
+    if let Some(option) = button.downcast_ref::<presentation::MenuOption>() {
+        option.set_menu_description(explanation.unwrap_or(""));
+    }
     button.update_property(&[gtk::accessible::Property::Description(
         explanation.unwrap_or(""),
     )]);
@@ -2008,96 +2052,34 @@ fn prepare_open_with(
     let result = result.clone();
     let generation = generation.clone();
     glib::MainContext::default().spawn_local(async move {
-        let unavailable = |reason: &str| {
-            for button in [&single_button, &multiple_button] {
-                button.set_sensitive(false);
-                set_open_with_explanation(button, Some(reason));
+        let resolved =
+            crate::ui::open_with::resolve(&files, || generation.get() == expected_generation).await;
+        let applications = match resolved {
+            None => return,
+            Some(Ok(applications)) => applications,
+            Some(Err(reason)) => {
+                for button in [&single_button, &multiple_button] {
+                    button.set_sensitive(false);
+                    set_open_with_explanation(button, Some(reason));
+                }
+                return;
             }
         };
-        const MAX_OPEN_WITH_SAMPLE: usize = 16;
-        let mut content_types = Vec::<String>::new();
-        for file in files.iter().take(MAX_OPEN_WITH_SAMPLE) {
-            if generation.get() != expected_generation {
-                return;
-            }
-            let info = file
-                .query_info_future(
-                    "standard::type,standard::content-type",
-                    gio::FileQueryInfoFlags::NONE,
-                    glib::Priority::DEFAULT,
-                )
-                .await;
-            if generation.get() != expected_generation {
-                return;
-            }
-            let Ok(info) = info else {
-                unavailable("Unable to read the selected file type");
-                return;
-            };
-            if info.file_type() == gio::FileType::SymbolicLink {
-                unavailable("Broken symbolic links cannot be opened with an application");
-                return;
-            }
-            let Some(next_type) = info.content_type().map(|value| value.to_string()) else {
-                unavailable("Unable to determine the selected file type");
-                return;
-            };
-            if !content_types
-                .iter()
-                .any(|value| gio::content_type_equals(value, &next_type))
-            {
-                content_types.push(next_type);
-            }
-        }
-        if generation.get() != expected_generation {
-            return;
-        }
-        let sample_slice = &files[..files.len().min(MAX_OPEN_WITH_SAMPLE)];
-        let requires_uris = crate::ui::open_with::requires_uri_handlers(sample_slice);
-        let (recommended_apps, other_apps, default) =
-            common_applications(&content_types, requires_uris);
-        let available = !recommended_apps.is_empty() || !other_apps.is_empty();
-        let explanation = if available {
-            None
-        } else if content_types.len() > 1 {
-            Some("No application can open all selected file types")
-        } else {
-            Some("No compatible applications were found")
-        };
-        open_button.set_visible(default.is_some());
+        let explanation = applications.unavailable_reason();
+        open_button.set_visible(applications.default.is_some());
         result.replace(Some(OpenWithSelection {
             locations,
             files,
-            content_types,
-            recommended_apps,
-            other_apps,
-            default,
+            content_types: applications.content_types,
+            recommended_apps: applications.recommended,
+            other_apps: applications.other,
+            default: applications.default,
         }));
         for button in [&single_button, &multiple_button] {
-            button.set_sensitive(available);
+            button.set_sensitive(explanation.is_none());
             set_open_with_explanation(button, explanation);
         }
     });
-}
-
-fn common_applications(
-    content_types: &[String],
-    requires_uris: bool,
-) -> (Vec<gio::AppInfo>, Vec<gio::AppInfo>, Option<gio::AppInfo>) {
-    let Some(first) = content_types.first() else {
-        return (vec![], vec![], None);
-    };
-    let (mut recommended, _) = crate::ui::open_with::categorized_apps(first, requires_uris);
-    let mut default = gio::AppInfo::default_for_type(first, requires_uris);
-    for content_type in &content_types[1..] {
-        let (next_rec, _) = crate::ui::open_with::categorized_apps(content_type, requires_uris);
-        recommended.retain(|app| next_rec.iter().any(|candidate| candidate.equal(app)));
-        let next_default = gio::AppInfo::default_for_type(content_type, requires_uris);
-        default = default.filter(|app| next_default.as_ref().is_some_and(|next| next.equal(app)));
-    }
-    let other =
-        crate::ui::open_with::filter_other_apps(gio::AppInfo::all(), &recommended, requires_uris);
-    (recommended, other, default)
 }
 
 #[cfg(test)]

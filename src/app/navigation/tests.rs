@@ -504,29 +504,38 @@ fn monitor_removals_preserve_selection_by_native_location() {
 
 #[test]
 fn removing_the_selected_entry_focuses_its_nearest_neighbor() {
-    let mut state = NavigationState::default();
-    let watched = location("/home");
-    state.navigate(watched.clone(), RequestId(1));
-    state.apply_batch(
-        RequestId(1),
-        vec![
-            named_entry("/home/alpha", "alpha"),
-            named_entry("/home/bravo", "bravo"),
-            named_entry("/home/charlie", "charlie"),
-        ],
-    );
-    assert!(state.select(0, 1));
+    for preserve_fill in [false, true] {
+        let mut state = NavigationState::default();
+        state.set_preserve_fill_on_removal(preserve_fill);
+        let watched = location("/home");
+        state.navigate(watched.clone(), RequestId(1));
+        state.apply_batch(
+            RequestId(1),
+            vec![
+                named_entry("/home/alpha", "alpha"),
+                named_entry("/home/bravo", "bravo"),
+                named_entry("/home/charlie", "charlie"),
+            ],
+        );
+        assert!(state.select(0, 1));
 
-    let (_, selected) = state
-        .apply_directory_change(
-            0,
-            &watched,
-            DirectoryChange::Remove(location("/home/bravo")),
-        )
-        .expect("removing the selected entry should change the column");
+        let (_, selected) = state
+            .apply_directory_change(
+                0,
+                &watched,
+                DirectoryChange::Remove(location("/home/bravo")),
+            )
+            .expect("removing the selected entry should change the column");
 
-    assert_eq!(selected, Some(1));
-    assert_eq!(state.columns[0].entries[1].display_name, "charlie");
+        assert_eq!(selected, Some(1));
+        assert_eq!(state.columns[0].entries[1].display_name, "charlie");
+        assert_eq!(
+            state.columns[0]
+                .selected_locations
+                .contains(&location("/home/charlie")),
+            !preserve_fill
+        );
+    }
 }
 
 #[test]
@@ -2308,59 +2317,6 @@ fn visual_ranges_add_and_subtract_the_walked_span_in_displayed_order() {
 }
 
 #[test]
-fn shift_runs_extend_from_their_own_anchor_over_the_kept_fill() {
-    let mut state = NavigationState::default();
-    five_entry_listing(&mut state);
-    let order = [3, 4, 0, 1, 2];
-    assert!(state.install_pane_fill(0, &[4], 3));
-    state.place_cursor(0, 1).expect("bravo");
-
-    assert!(state.begin_extend(Some(&order)).is_some());
-    assert_eq!(state.visual_kind(), None, "a run is not a visual mode");
-    walk_to(&mut state, 2, &order);
-    assert_eq!(
-        fill(&state, 0),
-        ["bravo", "charlie", "echo"],
-        "the run anchors at the moved cursor and keeps the fill"
-    );
-    assert!(state.begin_extend(Some(&order)).is_some());
-    walk_to(&mut state, 0, &order);
-    assert_eq!(
-        fill(&state, 0),
-        ["alpha", "bravo", "echo"],
-        "reversing past the anchor drops what the run covered"
-    );
-
-    state.end_extend();
-    walk_to(&mut state, 3, &order);
-    assert_eq!(fill(&state, 0), ["alpha", "bravo", "echo"]);
-    assert!(state.begin_extend(Some(&order)).is_some());
-    walk_to(&mut state, 4, &order);
-    assert_eq!(
-        fill(&state, 0),
-        ["alpha", "bravo", "delta", "echo"],
-        "the next run starts at the new cursor"
-    );
-    state.end_extend();
-
-    walk_to(&mut state, 2, &order);
-    state
-        .start_visual(VisualKind::Unset, Some(&order))
-        .expect("unset range at charlie");
-    assert!(state.begin_extend(Some(&order)).is_some());
-    walk_to(&mut state, 0, &order);
-    assert_eq!(
-        fill(&state, 0),
-        ["delta", "echo"],
-        "a run key extends the visual range instead of replacing it"
-    );
-    state.end_extend();
-    assert_eq!(state.visual_kind(), Some(VisualKind::Unset));
-    walk_to(&mut state, 1, &order);
-    assert_eq!(fill(&state, 0), ["alpha", "delta", "echo"]);
-}
-
-#[test]
 fn visual_ranges_start_on_a_load_cursor_and_leave_other_columns_alone() {
     let mut state = NavigationState::default();
     listing_with_the_first_entry_selected(&mut state);
@@ -2459,4 +2415,130 @@ fn visual_ranges_end_without_an_anchor_listing_or_pointer_commit() {
     state.navigate(location("/elsewhere"), RequestId(4));
     assert_eq!(state.visual_kind(), None);
     assert_eq!(state.refresh_visual(None), None);
+}
+
+#[test]
+fn precomputed_sort_preserves_natural_utf8_order() {
+    let names = vec![
+        "über_10.txt",
+        "über_2.txt",
+        "Straße_1.txt",
+        "STRASSE_2.txt",
+        "café_latte.txt",
+        "café.txt",
+        "apple.txt",
+        "Banana.txt",
+    ];
+    let entries: Vec<FileEntry> = names
+        .into_iter()
+        .map(|name| file_entry(&format!("/test/{name}"), name))
+        .collect();
+
+    let sorted = super::sort_entries(entries, ViewPreferences::default());
+    let sorted_names: Vec<&str> = sorted.iter().map(|e| e.display_name.as_str()).collect();
+
+    assert_eq!(
+        sorted_names,
+        vec![
+            "apple.txt",
+            "Banana.txt",
+            "café.txt",
+            "café_latte.txt",
+            "Straße_1.txt",
+            "STRASSE_2.txt",
+            "über_2.txt",
+            "über_10.txt",
+        ]
+    );
+}
+
+#[test]
+fn keyed_sort_and_batch_merge_match_monitor_order() {
+    let entries: Vec<_> = [
+        "ß.txt",
+        "ss.txt",
+        "İ.txt",
+        "i.txt",
+        "中文10.txt",
+        "中文2.txt",
+        "FILE.txt",
+        "file.txt",
+        "file02.txt",
+        "file2.txt",
+        "café.png",
+        "über.rs",
+        "unknown.strata-unknown-extension",
+        "same.txt",
+        "same.txt",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, name)| {
+        let mut entry = file_entry(&format!("/fixture/{index}/{name}"), name);
+        if index % 4 == 0 {
+            entry.kind = EntryKind::Directory;
+        }
+        entry.size = match index % 4 {
+            0 => MetadataValue::Unknown,
+            1 => MetadataValue::Unavailable,
+            _ => MetadataValue::Known(10),
+        };
+        entry.modified_unix_seconds = match index % 3 {
+            0 => MetadataValue::Known(20),
+            1 => MetadataValue::Known(10),
+            _ => MetadataValue::Unavailable,
+        };
+        entry.recent_unix_seconds = entry.modified_unix_seconds.clone();
+        entry
+    })
+    .collect();
+
+    for sort_key in [
+        SortKey::Name,
+        SortKey::Type,
+        SortKey::Size,
+        SortKey::Modified,
+        SortKey::Recency,
+        SortKey::DeviceOrder,
+    ] {
+        for sort_direction in [SortDirection::Ascending, SortDirection::Descending] {
+            for folders_first in [false, true] {
+                let preferences = ViewPreferences {
+                    sort_key,
+                    sort_direction,
+                    folders_first,
+                    ..ViewPreferences::default()
+                };
+                let mut expected = entries.clone();
+                expected.sort_by(|left, right| compare_entries(left, right, preferences));
+                assert_eq!(super::sort_entries(entries.clone(), preferences), expected);
+
+                let mut merged = Vec::new();
+                for batch in entries.chunks(4) {
+                    let before = merged.clone();
+                    let (next, insertions) =
+                        super::merge_entries(merged, batch.to_vec(), preferences);
+                    let mut replayed = before;
+                    for insertion in insertions {
+                        replayed.splice(insertion.position..insertion.position, insertion.entries);
+                    }
+                    assert_eq!(replayed, next);
+                    merged = next;
+                }
+                assert_eq!(merged, expected);
+
+                let mut monitored = Vec::new();
+                let mut splices = Vec::new();
+                for entry in &entries {
+                    super::insert_monitored_entry(
+                        &mut monitored,
+                        entry.clone(),
+                        preferences,
+                        &mut splices,
+                    );
+                }
+                assert_eq!(monitored, expected);
+            }
+        }
+    }
 }

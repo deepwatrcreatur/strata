@@ -14,8 +14,8 @@ mod document_media;
 mod document_view;
 mod entry_list_model;
 mod focus_navigation;
+mod folder_picker;
 mod frame;
-mod go_completion;
 mod icons_cell;
 mod inline_search;
 mod input_ownership;
@@ -23,6 +23,7 @@ mod jobs;
 mod loading_skeleton;
 mod marquee;
 mod media;
+mod missing_tools;
 mod modal;
 mod motion;
 mod open_with;
@@ -30,7 +31,9 @@ mod pointer;
 mod portal_preferences;
 pub(crate) mod preferences;
 mod preview;
+mod progress_dock;
 mod raw_details;
+mod recent_apps;
 mod scrolling;
 mod search;
 mod search_session;
@@ -49,6 +52,7 @@ mod virtual_preview;
 mod window;
 
 pub(crate) use chooser::{cancel_chooser, present_chooser};
+pub(crate) use settings::schedule_rollback_cleanup;
 pub(crate) use window::default_save_folder;
 pub(in crate::ui) use window::{
     RemovableDestination, removable_destinations, resolve_removable_destination,

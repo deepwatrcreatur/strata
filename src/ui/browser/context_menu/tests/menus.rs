@@ -26,6 +26,7 @@ impl FileSource for MenuSource {
                 "archive.zip",
                 "archive.rar",
                 "folder",
+                "photos.zip",
             ]
             .into_iter()
             .map(|name| FileEntry {
@@ -37,14 +38,14 @@ impl FileSource for MenuSource {
                 native_name: name.into(),
                 thumbnail_path: None,
                 display_name: name.into(),
-                kind: if name == "folder" {
+                kind: if matches!(name, "folder" | "photos.zip") {
                     EntryKind::Directory
                 } else {
                     EntryKind::File
                 },
                 size: MetadataValue::Known(5),
                 modified_unix_seconds: MetadataValue::Known(0),
-                mode: MetadataValue::Known(if matches!(name, "run-me" | "folder") {
+                mode: MetadataValue::Known(if matches!(name, "run-me" | "folder" | "photos.zip") {
                     0o755
                 } else {
                     0o644
@@ -71,6 +72,85 @@ impl FileSource for MenuSource {
     }
 }
 
+#[test]
+fn dropping_an_action_menu_unparents_its_popover() {
+    crate::test_support::gtk_test(
+        "ui::browser::context_menu::tests::menus::dropping_an_action_menu_unparents_its_popover",
+        || {
+            let overlay = gtk::Overlay::new();
+            let before = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            let after = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            let menu =
+                actions::ActionMenuSection::new(&before, &after, None, overlay.upcast_ref(), None);
+            let popover = menu.popover();
+            overlay.add_overlay(&popover);
+            assert!(popover.parent().is_some());
+
+            drop(menu);
+
+            assert!(popover.parent().is_none());
+        },
+    );
+}
+
+#[test]
+fn repeated_navigation_releases_context_menu_bindings() {
+    crate::test_support::gtk_test(
+        "ui::browser::context_menu::tests::menus::repeated_navigation_releases_context_menu_bindings",
+        || {
+            let manager = crate::ui::preferences::PreferenceManager::shared();
+            manager.set_tenxer_mode(false);
+            for mode in [BrowserMode::Columns, BrowserMode::List, BrowserMode::Icons] {
+                let first = tempfile::tempdir().expect("first menu fixture");
+                let second = tempfile::tempdir().expect("second menu fixture");
+                let view = BrowserView::new(Rc::new(MenuSource), PeekBehavior::default());
+                view.set_view_mode(mode);
+                let window = gtk::Window::builder()
+                    .child(&view.widget())
+                    .default_width(1000)
+                    .default_height(850)
+                    .build();
+                window.present();
+
+                let browser = view.browser();
+                let navigate = |path: &std::path::Path| {
+                    let location = Location::local(path);
+                    browser.navigate(location.clone());
+                    wait_until(|| {
+                        browser.active_location() == Some(location.clone())
+                            && browser
+                                .column_snapshot(0)
+                                .is_some_and(|column| !column.loading)
+                    });
+                };
+                navigate(first.path());
+                let retired_menu = (mode == BrowserMode::Icons).then(|| {
+                    let menu = open_menu(&view, Some("notes.txt"));
+                    let retired = menu.downgrade();
+                    menu.popdown();
+                    wait_until(|| !menu.is_mapped());
+                    retired
+                });
+                let baseline = manager.listener_count();
+                navigate(second.path());
+                if let Some(retired) = retired_menu {
+                    wait_until(|| retired.upgrade().is_none());
+                }
+                wait_until(|| manager.listener_count() <= baseline);
+
+                assert_eq!(
+                    manager.listener_count(),
+                    baseline,
+                    "{mode:?} retained context-menu bindings from a retired pane"
+                );
+
+                browser.clear_observer();
+                window.destroy();
+            }
+        },
+    );
+}
+
 pub(super) fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
     let mut result = vec![widget.clone()];
     let mut child = widget.first_child();
@@ -82,7 +162,7 @@ pub(super) fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
 }
 
 #[track_caller]
-pub(super) fn wait_until(condition: impl Fn() -> bool) {
+pub(in crate::ui::browser::context_menu) fn wait_until(condition: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !condition() {
         assert!(Instant::now() < deadline, "menu fixture did not settle");
@@ -184,17 +264,23 @@ fn context_hints_follow_the_active_map() {
             view.browser()
                 .navigate(crate::model::Location::local(fixture.path()));
             wait_until(|| label(&view.widget(), "notes.txt").is_some());
+            manager.set_type_to_search(false);
             let menu = open_menu(&view, Some("notes.txt"));
             let hints = label_texts(&menu);
             assert!(hints.iter().any(|hint| hint == "Space"), "{hints:?}");
             assert!(hints.iter().any(|hint| hint == "Y"), "{hints:?}");
+            manager.set_type_to_search(true);
+            let hints = label_texts(&menu);
+            assert!(
+                !hints.iter().any(|hint| hint == "Y"),
+                "type-to-search claims y: {hints:?}"
+            );
             menu.popdown();
             wait_until(|| !menu.is_mapped());
             manager.set_tenxer_mode(true);
             let menu = open_menu(&view, Some("notes.txt"));
             let hints = label_texts(&menu);
             assert!(!hints.iter().any(|hint| hint == "Space"), "{hints:?}");
-            assert!(hints.iter().any(|hint| hint == "F2"), "{hints:?}");
             let after = |label: &str| {
                 hints
                     .iter()
@@ -203,6 +289,7 @@ fn context_hints_follow_the_active_map() {
                     .map(String::as_str)
             };
             for (label, hint) in [
+                ("Rename", "R"),
                 ("Cut", "X"),
                 ("Copy", "Y"),
                 ("Move to Trash", "D"),
@@ -220,6 +307,56 @@ fn context_hints_follow_the_active_map() {
                 "GTK renders the i accelerator as I: {hints:?}"
             );
             menu.popdown();
+            view.browser().clear_observer();
+            window.destroy();
+        },
+    );
+}
+
+#[test]
+fn archive_extraction_actions_follow_build_support() {
+    crate::test_support::gtk_test(
+        "ui::browser::context_menu::tests::menus::archive_extraction_actions_follow_build_support",
+        || {
+            let fixture = tempfile::tempdir().expect("menu fixture");
+            let view = BrowserView::new(Rc::new(MenuSource), PeekBehavior::default());
+            view.set_operation_provider(Rc::new(crate::adapters::LocalOperationProvider));
+            let window = gtk::Window::builder()
+                .child(&view.widget())
+                .default_width(1000)
+                .default_height(850)
+                .build();
+            window.present();
+            view.browser().navigate(Location::local(fixture.path()));
+            wait_until(|| {
+                label(&view.widget(), "archive.rar").is_some()
+                    && label(&view.widget(), "photos.zip").is_some()
+            });
+            for (name, supported) in [
+                ("archive.zip", true),
+                ("archive.rar", cfg!(feature = "rar")),
+                ("photos.zip", false),
+            ] {
+                let menu = open_menu(&view, Some(name));
+                let labels = label_texts(&menu);
+                if name == "photos.zip" {
+                    assert!(
+                        labels
+                            .iter()
+                            .any(|label| label == "Open in Terminal" || label == "Pin to sidebar"),
+                        "{labels:?}"
+                    );
+                }
+                for action in ["Extract here", "Extract to…"] {
+                    assert_eq!(
+                        labels.iter().any(|label| label == action),
+                        supported,
+                        "{name}: {labels:?}"
+                    );
+                }
+                menu.popdown();
+                wait_until(|| !menu.is_mapped());
+            }
             view.browser().clear_observer();
             window.destroy();
         },

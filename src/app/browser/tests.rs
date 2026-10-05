@@ -9,6 +9,7 @@ use std::{
 use super::*;
 
 mod archive_activation;
+mod background_operations;
 mod camera_photos;
 #[path = "deferred/tests.rs"]
 mod deferred;
@@ -321,6 +322,21 @@ impl FileSource for ArchiveFileSource {
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
                 },
+                FileEntry {
+                    location: Location::local("/fixture/socket.zip"),
+                    native_name: OsString::from("socket.zip"),
+                    thumbnail_path: None,
+                    display_name: "socket.zip".into(),
+                    kind: EntryKind::Other,
+                    size: MetadataValue::Known(0),
+                    modified_unix_seconds: MetadataValue::Known(1),
+                    recent_unix_seconds: MetadataValue::Unknown,
+                    is_hidden: false,
+                    mode: MetadataValue::Unknown,
+                    image_dimensions: MetadataValue::Unknown,
+                    child_count: MetadataValue::Unknown,
+                    duration_seconds: MetadataValue::Unknown,
+                },
             ],
         });
         emit(DirectoryEvent::Finished {
@@ -523,6 +539,7 @@ type UndoMergeRecord = (
 
 thread_local! {
     static UNDO_MOVE_REQUESTS: RefCell<Vec<Vec<MoveRecord>>> = const { RefCell::new(Vec::new()) };
+    static UNDO_MOVE_CLEANUPS: RefCell<Vec<Vec<Location>>> = const { RefCell::new(Vec::new()) };
     static UNDO_COPY_REQUESTS: RefCell<Vec<Vec<Location>>> = const { RefCell::new(Vec::new()) };
     static UNDO_MERGE_REQUESTS: RefCell<Vec<UndoMergeRecord>> =
         const { RefCell::new(Vec::new()) };
@@ -619,6 +636,11 @@ impl OperationProvider for ImmediateOperationProvider {
     }
 
     fn undo_move(&self, request: UndoMoveRequest, emit: Rc<dyn Fn(OperationEvent)>) -> LoadHandle {
+        UNDO_MOVE_CLEANUPS.with(|requests| {
+            requests
+                .borrow_mut()
+                .push(request.cleanup_locations.clone())
+        });
         UNDO_MOVE_REQUESTS.with(|requests| {
             requests.borrow_mut().push(
                 request

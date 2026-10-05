@@ -179,6 +179,7 @@ impl ModeViews {
         if let BrowserEvent::SortingFinished { depth } | BrowserEvent::ColumnReloaded { depth } =
             event
         {
+            let preferences = self.browser.column_preferences(*depth);
             self.update_panes(*depth, |pane| {
                 if let Some(button) = &pane.sort_direction_button {
                     super::super::browser::sync_column_sort_direction(
@@ -186,6 +187,9 @@ impl ModeViews {
                         *depth,
                         button,
                     );
+                }
+                if let (Some(sorting), Some(preferences)) = (&pane.sorting, preferences) {
+                    sorting.show(preferences.sort_key, preferences.sort_direction);
                 }
             });
         }
@@ -409,14 +413,14 @@ impl Pane {
     }
 
     fn start_sorting(&self) {
-        self.spinner.set_tooltip_text(Some("Sorting…"));
+        crate::ui::accessibility::set_description(&self.spinner, Some("Sorting…"));
         self.spinner.set_visible(true);
         self.spinner.start();
     }
 
     fn finish_sorting(&self) {
         self.hide_spinner();
-        self.spinner.set_tooltip_text(None);
+        crate::ui::accessibility::set_description(&self.spinner, None);
     }
 
     fn reload_rows(&self) {

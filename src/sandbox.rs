@@ -20,6 +20,7 @@ use crate::services::{
     model_preview::MAX_MODEL_INPUT_BYTES,
 };
 
+#[cfg(feature = "rar")]
 pub(crate) mod archive;
 pub(crate) mod browser;
 pub(crate) mod media;
@@ -140,6 +141,8 @@ pub(crate) enum ParseOperation {
     ThumbnailCover(CoverFormat),
     PreviewCover(CoverFormat),
     PreviewImage,
+    InspectImage,
+    ConvertImage,
     DocumentImage,
     DocumentMermaid,
     DocumentMath {
@@ -152,6 +155,13 @@ pub(crate) enum ParseOperation {
     PreviewPdf(PdfRenderSize),
     PreviewModel(ModelRender),
     PreviewMedia(MediaPreviewSize),
+    PreviewAudio(MediaPreviewSize),
+    AudioPeaks,
+    VideoStoryboard {
+        cell_edge: u32,
+    },
+    AudioTags,
+    AudioCover,
     ArchiveList {
         format: ArchiveFormat,
         password: Option<SecretString>,
@@ -170,6 +180,8 @@ impl ParseOperation {
             Self::ThumbnailCover(_) => "thumbnail-cover",
             Self::PreviewCover(_) => "preview-cover",
             Self::PreviewImage => "preview-image",
+            Self::InspectImage => "inspect-image",
+            Self::ConvertImage => "convert-image",
             Self::DocumentImage => "document-image",
             Self::DocumentMermaid => "document-mermaid",
             Self::DocumentMath { display: true } => "document-math",
@@ -181,25 +193,48 @@ impl ParseOperation {
             Self::PreviewPdf(_) => "preview-pdf",
             Self::PreviewModel(_) => "preview-model",
             Self::PreviewMedia(_) => "preview-media",
+            Self::PreviewAudio(_) => "preview-audio",
+            Self::AudioPeaks => "audio-peaks",
+            Self::VideoStoryboard { .. } => "video-storyboard",
+            Self::AudioTags => "audio-tags",
+            Self::AudioCover => "audio-cover",
             Self::ArchiveList { .. } => "archive-list",
         }
     }
 
     fn is_media(&self) -> bool {
-        matches!(self, Self::PreviewMedia(_))
+        matches!(
+            self,
+            Self::PreviewMedia(_)
+                | Self::PreviewAudio(_)
+                | Self::AudioPeaks
+                | Self::VideoStoryboard { .. }
+        )
     }
 
     fn needs_media_libraries(&self) -> bool {
         matches!(
             self,
-            Self::ThumbnailVideo | Self::PreviewMedia(_) | Self::MediaMetadata
+            Self::ThumbnailVideo
+                | Self::PreviewMedia(_)
+                | Self::PreviewAudio(_)
+                | Self::AudioPeaks
+                | Self::VideoStoryboard { .. }
+                | Self::AudioTags
+                | Self::AudioCover
+                | Self::MediaMetadata
         )
     }
 
     fn output_name(&self) -> &'static str {
         if matches!(
             self,
-            Self::MediaMetadata | Self::RawMetadata | Self::PreviewWorkbook | Self::PreviewDocument
+            Self::MediaMetadata
+                | Self::AudioTags
+                | Self::RawMetadata
+                | Self::PreviewWorkbook
+                | Self::PreviewDocument
+                | Self::InspectImage
         ) {
             "result.json"
         } else if self.is_media() {
@@ -220,7 +255,12 @@ impl ParseOperation {
             | Self::ThumbnailAppImage
             | Self::ThumbnailModel(_)
             | Self::ThumbnailCover(_) => Some((256, 256, 256 * 256)),
-            Self::PreviewCover(_) => Some((800, 800, 800 * 800)),
+            Self::PreviewCover(_) | Self::AudioCover => Some((800, 800, 800 * 800)),
+            Self::ConvertImage => Some((
+                crate::services::image_conversion::MAX_EDGE,
+                crate::services::image_conversion::MAX_EDGE,
+                crate::services::image_conversion::MAX_PIXELS,
+            )),
             Self::PreviewImage
             | Self::DocumentImage
             | Self::DocumentMermaid
@@ -231,6 +271,11 @@ impl ParseOperation {
                 Some((size.width as u32, size.height as u32, 1280 * 1280))
             }
             Self::PreviewMedia(_)
+            | Self::InspectImage
+            | Self::PreviewAudio(_)
+            | Self::AudioPeaks
+            | Self::VideoStoryboard { .. }
+            | Self::AudioTags
             | Self::MediaMetadata
             | Self::RawMetadata
             | Self::PreviewWorkbook
@@ -251,6 +296,9 @@ impl ParseOperation {
             Self::ThumbnailCover(_) | Self::PreviewCover(_) => {
                 Some(crate::sandbox_helper::archive_cover::MAX_INPUT_BYTES)
             }
+            Self::InspectImage | Self::ConvertImage => {
+                Some(crate::services::image_conversion::MAX_INPUT_BYTES)
+            }
             Self::PreviewWorkbook => Some(crate::services::table::WORKBOOK_BYTE_LIMIT),
             Self::PreviewDocument => Some(crate::services::docx::DOCX_BYTE_LIMIT),
             Self::DocumentImage => Some(crate::services::document_media::IMAGE_INPUT_LIMIT),
@@ -263,6 +311,11 @@ impl ParseOperation {
             Self::ThumbnailVideo
             | Self::ThumbnailAppImage
             | Self::PreviewMedia(_)
+            | Self::PreviewAudio(_)
+            | Self::AudioPeaks
+            | Self::VideoStoryboard { .. }
+            | Self::AudioTags
+            | Self::AudioCover
             | Self::MediaMetadata
             | Self::ArchiveList { .. } => None,
         }
@@ -271,6 +324,12 @@ impl ParseOperation {
 
 #[derive(Clone, Default)]
 pub(crate) struct Cancellation(Arc<AtomicBool>);
+
+impl From<Arc<AtomicBool>> for Cancellation {
+    fn from(flag: Arc<AtomicBool>) -> Self {
+        Self(flag)
+    }
+}
 
 impl Cancellation {
     pub(crate) fn cancel(&self) {
@@ -365,14 +424,21 @@ fn parse_sandboxed(
         .input_size_limit()
         .is_some_and(|limit| input_metadata.len() > limit)
     {
-        return Err(if matches!(operation, ParseOperation::PreviewModel(_)) {
-            format!(
-                "This model file exceeds the {} MiB preview limit. Try a smaller or lower-detail version.",
-                MAX_MODEL_INPUT_BYTES / (1024 * 1024)
-            )
-        } else {
-            "Preview input exceeds the supported size limit".to_owned()
-        });
+        return Err(
+            if matches!(
+                operation,
+                ParseOperation::InspectImage | ParseOperation::ConvertImage
+            ) {
+                "The image exceeds the 32 MiB conversion limit. Choose a smaller image.".to_owned()
+            } else if matches!(operation, ParseOperation::PreviewModel(_)) {
+                format!(
+                    "This model file exceeds the {} MiB preview limit. Try a smaller or lower-detail version.",
+                    MAX_MODEL_INPUT_BYTES / (1024 * 1024)
+                )
+            } else {
+                "Preview input exceeds the supported size limit".to_owned()
+            },
+        );
     }
     if let Some(result) = browser::preview(&input, &operation, cancellation) {
         return result.map(|data| ParseOutput {
@@ -446,8 +512,12 @@ fn parse_sandboxed(
     let status =
         wait_for_renderer_reporting(&mut child, cancellation, timeout, &mut poll_progress)?;
     if !status.success() {
-        if matches!(operation, ParseOperation::PreviewModel(_))
-            && let Ok(data) = read_private_output(&output.path().join("result.error"), 512)
+        if matches!(
+            operation,
+            ParseOperation::PreviewModel(_)
+                | ParseOperation::InspectImage
+                | ParseOperation::ConvertImage
+        ) && let Ok(data) = read_private_output(&output.path().join("result.error"), 512)
             && let Ok(message) = String::from_utf8(data)
         {
             return Err(message);
@@ -456,9 +526,11 @@ fn parse_sandboxed(
     }
 
     let result_path = output.path().join(operation.output_name());
-    let limit = if matches!(
+    let limit = if matches!(operation, ParseOperation::InspectImage) {
+        32
+    } else if matches!(
         operation,
-        ParseOperation::MediaMetadata | ParseOperation::RawMetadata
+        ParseOperation::MediaMetadata | ParseOperation::AudioTags | ParseOperation::RawMetadata
     ) {
         metadata::MAX_METADATA_BYTES
     } else {
@@ -608,7 +680,7 @@ fn runtime_command(bwrap: &Path, needs_media_libraries: bool) -> Command {
         "--clearenv",
         "--setenv",
         "PATH",
-        "/usr/bin",
+        option_env!("STRATA_SANDBOX_PATH").unwrap_or("/usr/bin"),
         "--setenv",
         "HOME",
         "/nonexistent",
@@ -628,8 +700,8 @@ fn runtime_command(bwrap: &Path, needs_media_libraries: bool) -> Command {
         "--dir",
         "/etc",
         "--ro-bind",
-        "/usr",
-        "/usr",
+        option_env!("STRATA_SANDBOX_ROOT").unwrap_or("/usr"),
+        option_env!("STRATA_SANDBOX_ROOT").unwrap_or("/usr"),
         "--ro-bind-try",
         "/lib",
         "/lib",
@@ -652,6 +724,9 @@ fn runtime_command(bwrap: &Path, needs_media_libraries: bool) -> Command {
         "/etc/ImageMagick-6",
         "/etc/ImageMagick-6",
     ]);
+    if let Some(loaders) = option_env!("STRATA_SANDBOX_GDK_PIXBUF_MODULE_FILE") {
+        command.args(["--setenv", "GDK_PIXBUF_MODULE_FILE", loaders]);
+    }
     if needs_media_libraries {
         // Debian-family FFmpeg libraries resolve BLAS/LAPACK through these links.
         // Expose only the runtime files, not the system alternatives directory.
@@ -700,7 +775,7 @@ fn sandbox_command(
     command.arg("--");
     if !operation.is_media() {
         command
-            .arg("/usr/bin/prlimit")
+            .arg(option_env!("STRATA_SANDBOX_PRLIMIT").unwrap_or("/usr/bin/prlimit"))
             .arg(format!("--as={ADDRESS_SPACE_LIMIT_BYTES}"))
             .arg("--cpu=10")
             .arg(format!(
@@ -719,10 +794,16 @@ fn sandbox_command(
         operation.argument(),
         &sandbox_input,
     ]);
-    if let ParseOperation::PreviewMedia(size) = operation {
+    if let ParseOperation::PreviewMedia(size) | ParseOperation::PreviewAudio(size) = operation {
         let size = MediaPreviewSize::new(size.width, size.height);
         command.arg("/dev/stdout");
         command.arg(format!("{}x{}", size.width, size.height));
+    } else if let ParseOperation::AudioPeaks | ParseOperation::VideoStoryboard { .. } = operation {
+        command.arg("/dev/stdout");
+        command.arg(match operation {
+            ParseOperation::VideoStoryboard { cell_edge } => cell_edge.to_string(),
+            _ => "0".to_owned(),
+        });
     } else {
         command.arg(format!("/output/{}", operation.output_name()));
         let value = match operation {
@@ -828,6 +909,14 @@ pub(crate) fn numbered_name(name: &std::ffi::OsStr, prefix: &str) -> bool {
 }
 
 fn valid_output(operation: ParseOperation, data: &[u8]) -> bool {
+    if matches!(operation, ParseOperation::InspectImage) {
+        return data.len() <= 32
+            && serde_json::from_slice::<crate::services::image_conversion::ImageKind>(data)
+                .is_ok();
+    }
+    if matches!(operation, ParseOperation::AudioCover) && data == b"null" {
+        return true;
+    }
     if matches!(operation, ParseOperation::PreviewWorkbook) {
         return crate::services::table::TableData::from_json(data).is_ok();
     }
@@ -836,6 +925,9 @@ fn valid_output(operation: ParseOperation, data: &[u8]) -> bool {
     }
     if matches!(operation, ParseOperation::RawMetadata) {
         return raw_metadata::RawMetadata::from_json(data).is_ok();
+    }
+    if matches!(operation, ParseOperation::AudioTags) {
+        return metadata::AudioTags::from_json(data).is_ok();
     }
     if matches!(operation, ParseOperation::MediaMetadata) {
         data.len() as u64 <= metadata::MAX_METADATA_BYTES

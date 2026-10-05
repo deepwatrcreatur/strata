@@ -7,12 +7,14 @@ use crate::app::{BrowserEvent, SelectionUpdate};
 use crate::model::FileEntry;
 use crate::services::LocationValidationError;
 use crate::ui::browser::ViewState;
+use crate::ui::browser::archive::{
+    extract_error_needs_password, extract_error_reports_wrong_password,
+};
 use crate::ui::browser::columns::{
     column_size_text, prune_missing_search_results, restore_column_cursor, scroll_column_to,
     select_all_in_column, set_column_busy, set_column_selections, set_filter_placeholder,
     stop_column_spinner, touch_source_model, update_empty_trash_sensitivity,
 };
-use crate::ui::browser::desktop::open_location;
 use crate::ui::browser::entry::item_count_label;
 use crate::ui::browser::location::MountStrategy;
 use crate::ui::browser::peek::append_peek_entries;
@@ -53,6 +55,10 @@ impl ViewState {
             self.cancel_click_rename();
         }
         match event {
+            BrowserEvent::BackgroundOperation { request_id, event } => {
+                self.handle_background_file_operation(*request_id, event);
+                return;
+            }
             BrowserEvent::SelectionSynced { .. } => return,
             BrowserEvent::NavigationStarting => {
                 self.forget_listing_search();
@@ -226,13 +232,17 @@ impl ViewState {
             BrowserEvent::SortingStarted { depth } => {
                 self.overlay.set_cursor_from_name(Some("wait"));
                 if let Some(column) = self.columns.borrow().get(*depth) {
-                    column.spinner.set_tooltip_text(Some("Sorting…"));
+                    crate::ui::accessibility::set_description(&column.spinner, Some("Sorting…"));
                     column.spinner.set_visible(true);
                     column.spinner.start();
                     set_column_busy(column, true);
                 }
             }
             BrowserEvent::SortingFinished { depth } => {
+                self.finish_keyboard_refocus(
+                    super::file_commands::KeyboardRefocus::Sort(*depth),
+                    true,
+                );
                 self.overlay.set_cursor(None::<&gtk::gdk::Cursor>);
                 if let Some(column) = self.columns.borrow().get(*depth) {
                     super::pane_header::sync_column_sort_direction(
@@ -241,7 +251,7 @@ impl ViewState {
                         &column.sort_direction_button,
                     );
                     stop_column_spinner(column);
-                    column.spinner.set_tooltip_text(None);
+                    crate::ui::accessibility::set_description(&column.spinner, None);
                     set_column_busy(column, false);
                 }
             }
@@ -622,7 +632,17 @@ impl ViewState {
             }
             BrowserEvent::OpenRequested { location } => {
                 if self.interactive {
-                    open_location(location, &self.overlay, &self.browser);
+                    let position = self
+                        .playback_handoff
+                        .borrow()
+                        .as_ref()
+                        .and_then(|handoff| handoff(location));
+                    super::desktop::open_location_at(
+                        location,
+                        position,
+                        &self.overlay,
+                        &self.browser,
+                    );
                 }
             }
             BrowserEvent::EntryCreated { location } => {
@@ -631,6 +651,10 @@ impl ViewState {
             BrowserEvent::RenameCompleted { request_id } => {
                 self.complete_pending_rename(*request_id);
                 self.prune_stale_search_results();
+                self.finish_keyboard_refocus(
+                    super::file_commands::KeyboardRefocus::Rename(*request_id),
+                    true,
+                );
             }
             BrowserEvent::RenameAbandoned { request_id } => {
                 self.abandon_pending_rename(*request_id);
@@ -640,6 +664,12 @@ impl ViewState {
                 message,
             } => {
                 self.fail_pending_rename_from_browser(*request_id);
+                if let Some(request_id) = request_id {
+                    self.finish_keyboard_refocus(
+                        super::file_commands::KeyboardRefocus::Rename(*request_id),
+                        false,
+                    );
+                }
                 show_error_dialog(&self.overlay, "Unable to rename item", message);
             }
             BrowserEvent::TransferStarted { total, moving } => {
@@ -657,9 +687,12 @@ impl ViewState {
                         "Copying items"
                     },
                     "Cancelling will not undo completed changes",
-                    Rc::new(move || browser.cancel_file_operation()),
+                    super::progress::file_operation_cancel(browser),
                 );
                 self.update_transfer_progress(0, 0, None, 0, None);
+                if let Some(id) = self.browser.backgroundable_operation() {
+                    self.dock_file_operation(id);
+                }
             }
             BrowserEvent::TransferProgress {
                 completed_items,
@@ -669,7 +702,9 @@ impl ViewState {
                 transferred_bytes,
                 total_bytes,
             } => {
-                self.transfer_current_file.replace(current_file.clone());
+                self.file_progress()
+                    .transfer_current_file
+                    .replace(current_file.clone());
                 self.update_transfer_progress(
                     *completed_items,
                     *completed_files,
@@ -690,7 +725,7 @@ impl ViewState {
                 }
                 // TransferFinished also fires on failure; defer feedback until TransferCompleted.
                 if let Some(completion) = self.pending_send_to_completion.take() {
-                    let progress_shown = self.file_progress_view.borrow().is_some();
+                    let progress_shown = self.file_progress().file_progress_view.borrow().is_some();
                     self.finished_send_to_completion
                         .replace(Some(FinishedSendToCompletion {
                             completion,
@@ -707,8 +742,12 @@ impl ViewState {
                     crate::assets::icons::TRASH,
                     "Deleting items",
                     "Cancelling will not undo completed changes",
-                    Rc::new(move || browser.cancel_file_operation()),
+                    super::progress::file_operation_cancel(browser),
                 );
+                self.file_progress().deleting.set(true);
+                if let Some(id) = self.browser.backgroundable_operation() {
+                    self.dock_file_operation(id);
+                }
             }
             BrowserEvent::DeletionProgress { completed, total } => {
                 self.update_item_progress(*completed, *total);
@@ -758,7 +797,7 @@ impl ViewState {
                     crate::assets::icons::FOLDER,
                     "Restoring items",
                     "Cancelling will not undo completed changes",
-                    Rc::new(move || browser.cancel_file_operation()),
+                    super::progress::file_operation_cancel(browser),
                 );
             }
             BrowserEvent::RestorationProgress { completed, total } => {
@@ -797,7 +836,7 @@ impl ViewState {
                     if let Some((entry, destination)) = retry
                         && extract_error_needs_password(&message)
                     {
-                        let invalid_password = message.to_lowercase().contains("incorrect");
+                        let invalid_password = extract_error_reports_wrong_password(&message);
                         let navigate_after_extract = state.pending_navigate.take();
                         state.show_extract_password_dialog(
                             entry,
@@ -930,17 +969,31 @@ impl ViewState {
                 self.show_file_operation_progress(
                     *total,
                     crate::assets::icons::FILE_ARCHIVE,
-                    "Processing archive…",
+                    if self.browser.backgroundable_operation().is_some() {
+                        "Compressing items"
+                    } else {
+                        "Processing archive…"
+                    },
                     "Cancelling will not undo completed changes",
-                    Rc::new(move || browser.cancel_file_operation()),
+                    super::progress::file_operation_cancel(browser),
                 );
+                self.file_progress()
+                    .archive_compressing
+                    .set(self.browser.backgroundable_operation().is_some());
                 self.update_archive_progress(0, *total);
+                if let Some(id) = self.browser.backgroundable_operation() {
+                    self.dock_file_operation(id);
+                }
             }
             BrowserEvent::ArchiveProgress { completed, total } => {
                 self.update_archive_progress(*completed, *total);
             }
             BrowserEvent::ArchiveCompleted { select_name, .. } => {
                 self.pending_extract_retry.replace(None);
+                let extracted_elsewhere = self
+                    .extract_destination
+                    .take()
+                    .is_some_and(|destination| self.browser.active_location() != Some(destination));
                 if select_name.is_empty() {
                     self.pending_archive_destination.take();
                 }
@@ -999,7 +1052,7 @@ impl ViewState {
                         if let Some(state) = weak.upgrade()
                             && state.browser.navigation_generation() == navigation_generation
                         {
-                            if !select_name.is_empty() {
+                            if !select_name.is_empty() && !extracted_elsewhere {
                                 state.pending_select.borrow_mut().push(select_name);
                             }
                             state.browser.reload_active();
@@ -1255,7 +1308,7 @@ impl ViewState {
         self.mode_views.borrow().show_empty_if_empty(depth);
     }
 
-    fn prune_stale_search_results(&self) {
+    pub(super) fn prune_stale_search_results(&self) {
         let columns = self.columns.borrow().clone();
         let mut changed = false;
         for column in &columns {
@@ -1267,7 +1320,7 @@ impl ViewState {
         self.mode_views.borrow().prune_stale_search_results();
     }
 
-    fn mirror_focused_folder(self: &Rc<Self>, depth: usize, position: Option<usize>) {
+    pub(super) fn mirror_focused_folder(self: &Rc<Self>, depth: usize, position: Option<usize>) {
         if let Some(source) = self.pending_mirror.borrow_mut().take() {
             source.remove();
         }
@@ -1275,6 +1328,7 @@ impl ViewState {
             return;
         };
         if self.browser.child_mirror_suppressed()
+            || self.browser.visual_kind().is_some()
             || !self.columns_mirror_selection.get()
             || self.active_rename.borrow().is_some()
             || self.pending_new_entry.borrow().is_some()
@@ -1301,8 +1355,10 @@ impl ViewState {
             .borrow()
             .get(depth)
             .is_some_and(|column| column.map.has_query());
+        // Opening or closing the child column would end a 10xer range.
         if filtered
             || self.browser.child_mirror_suppressed()
+            || self.browser.visual_kind().is_some()
             || !self.columns_mirror_selection.get()
             || self.active_rename.borrow().is_some()
             || self.pending_new_entry.borrow().is_some()
@@ -1325,7 +1381,7 @@ impl ViewState {
             if self.single_click_previews.get()
                 && let Some(entry) = preview_target(Some(entry))
             {
-                self.browser.request_preview(entry);
+                self.browser.request_automatic_preview(entry);
             }
         }
     }
@@ -1345,16 +1401,4 @@ impl ViewState {
                 | BrowserEvent::EntriesReplaced { .. }
         )
     }
-}
-
-fn extract_error_needs_password(message: &str) -> bool {
-    // Member diagnostics quote one unescaped filename, which can itself contain backticks.
-    let (prefix, suffix) = match (message.find('`'), message.rfind('`')) {
-        (Some(start), Some(end)) if start < end => (&message[..start], &message[end + 1..]),
-        _ => (message, ""),
-    };
-    [prefix, suffix].iter().any(|text| {
-        let lower = text.to_lowercase();
-        lower.contains("password") || lower.contains("encrypt")
-    })
 }

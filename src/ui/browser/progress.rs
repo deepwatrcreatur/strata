@@ -1,20 +1,25 @@
 // SPDX-License-Identifier: MIT
 
 use crate::ui::blur::BlurBin;
-use crate::ui::browser::ViewState;
 use crate::ui::browser::entry::{format_file_size, item_count_label};
-use crate::ui::controls::modal_layout;
-use crate::ui::modal::{dismiss_modal_layer, modal_layer, window_overlay};
+use crate::ui::controls::{modal_layout, progress_summary};
+use crate::ui::modal::{ModalHost, dismiss_modal_layer, modal_layer};
 use gtk::glib;
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+mod context;
+mod presentation;
+pub(super) use context::{BackgroundProgress, FileProgressState, file_operation_cancel};
+
 #[cfg(test)]
 mod tests;
 
 const FILE_PROGRESS_DELAY: Duration = Duration::from_millis(350);
+const TRANSFER_ITEM_TEXT_WIDTH_CHARS: i32 = 48;
+const TRANSFER_RATE_TEXT_WIDTH_CHARS: i32 = 26;
 
 #[cfg(test)]
 thread_local! {
@@ -57,7 +62,9 @@ pub(super) struct TransferProgressSnapshot {
 }
 
 pub(super) struct FileProgressView {
-    layer: gtk::Box,
+    layer: RefCell<Option<gtk::Box>>,
+    icon_name: String,
+    compact: Option<Rc<crate::ui::progress_dock::CompactProgress>>,
     overlay: gtk::Overlay,
     blurred_root: Option<BlurBin>,
     progress: gtk::ProgressBar,
@@ -65,6 +72,7 @@ pub(super) struct FileProgressView {
     title: gtk::Label,
     subtitle: gtk::Label,
     cancel: gtk::Button,
+    cancel_action: Option<Rc<dyn Fn()>>,
     status_row: gtk::Box,
     transfer_header: gtk::Box,
     transfer_footer: gtk::Box,
@@ -158,7 +166,7 @@ fn transfer_rate_status(rate: Option<f64>, transferred: u64, total: Option<u64>)
     }
 }
 
-impl ViewState {
+impl FileProgressState {
     pub(super) fn show_file_operation_progress(
         self: &Rc<Self>,
         total: usize,
@@ -195,12 +203,14 @@ impl ViewState {
         subtitle_text: &str,
         on_cancel: Rc<dyn Fn()>,
     ) {
-        let Some(window_overlay) = window_overlay(&self.overlay) else {
+        // Blurring the live listing repaints the whole window on each operation update.
+        let Some(ModalHost {
+            overlay: window_overlay,
+            blurred_root,
+        }) = ModalHost::for_widget(&self.overlay)
+        else {
             return;
         };
-        // File listings update throughout an operation. Re-blurring that live surface
-        // repaints the whole window and can visibly pulse behind the progress dialog.
-        let blurred_root = None;
 
         let layout = modal_layout(icon, title_text, subtitle_text, "Cancel");
         layout.content.add_css_class("compact");
@@ -209,9 +219,8 @@ impl ViewState {
         let status = gtk::Label::new(Some("0%"));
         status.add_css_class("modal-progress-status");
         status.set_xalign(0.0);
-        let progress = gtk::ProgressBar::new();
-        progress.add_css_class("modal-progress");
-        progress.set_fraction(0.0);
+        let summary = progress_summary("Transferred");
+        let progress = summary.progress;
         let archive_activity = gtk::Spinner::new();
         archive_activity.set_visible(false);
         let status_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -219,35 +228,28 @@ impl ViewState {
         status_row.append(&status);
         layout.body.append(&status_row);
 
-        let transfer_header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        transfer_header.add_css_class("transfer-progress-header");
+        let transfer_header = summary.header;
         transfer_header.set_visible(false);
-        let transfer_amount = gtk::Box::new(gtk::Orientation::Vertical, 4);
-        transfer_amount.set_hexpand(true);
-        let caption = gtk::Label::new(Some("Transferred"));
-        caption.add_css_class("transfer-progress-caption");
-        caption.set_xalign(0.0);
-        let transfer_bytes = gtk::Label::new(None);
-        transfer_bytes.add_css_class("transfer-progress-bytes");
-        transfer_bytes.set_xalign(0.0);
-        transfer_amount.append(&caption);
-        transfer_amount.append(&transfer_bytes);
-        let transfer_percent = gtk::Label::new(None);
-        transfer_percent.add_css_class("transfer-progress-percent");
-        transfer_header.append(&transfer_amount);
-        transfer_header.append(&transfer_percent);
-        layout.body.append(&transfer_header);
-        layout.body.append(&progress);
+        let transfer_bytes = summary.amount;
+        let transfer_percent = summary.percent;
+        layout.body.append(&summary.widget);
 
         let transfer_footer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         transfer_footer.add_css_class("transfer-progress-footer");
         transfer_footer.set_visible(false);
         let transfer_items = gtk::Label::new(None);
         transfer_items.set_xalign(0.0);
+        transfer_items.set_halign(gtk::Align::Start);
         transfer_items.set_hexpand(true);
         transfer_items.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        // Equal minimum and maximum text widths keep live updates from resizing the modal.
+        transfer_items.set_width_chars(TRANSFER_ITEM_TEXT_WIDTH_CHARS);
+        transfer_items.set_max_width_chars(TRANSFER_ITEM_TEXT_WIDTH_CHARS);
         let transfer_rate = gtk::Label::new(None);
         transfer_rate.set_xalign(1.0);
+        transfer_rate.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        transfer_rate.set_width_chars(TRANSFER_RATE_TEXT_WIDTH_CHARS);
+        transfer_rate.set_max_width_chars(TRANSFER_RATE_TEXT_WIDTH_CHARS);
         transfer_footer.append(&transfer_items);
         transfer_footer.append(&transfer_rate);
         layout.body.append(&transfer_footer);
@@ -259,15 +261,22 @@ impl ViewState {
         let indeterminate = Rc::new(Cell::new(false));
         let pulse_source = Rc::new(RefCell::new(None));
 
-        let layer = modal_layer(
-            &content,
-            &window_overlay,
-            blurred_root.clone(),
-            Some(Rc::new(|| true)),
-        );
-        window_overlay.add_overlay(&layer);
+        let layer = if self.dock_only.get() {
+            None
+        } else {
+            let layer = modal_layer(
+                &content,
+                &window_overlay,
+                blurred_root.clone(),
+                Some(Rc::new(|| true)),
+            );
+            window_overlay.add_overlay(&layer);
+            Some(layer)
+        };
         self.file_progress_view.replace(Some(FileProgressView {
-            layer,
+            layer: RefCell::new(layer),
+            icon_name: icon.to_owned(),
+            compact: None,
             overlay: window_overlay,
             blurred_root,
             progress,
@@ -275,6 +284,7 @@ impl ViewState {
             title,
             subtitle,
             cancel: cancel.clone(),
+            cancel_action: None,
             status_row,
             transfer_header,
             transfer_footer,
@@ -292,27 +302,29 @@ impl ViewState {
             let Some(state) = weak.upgrade() else {
                 return;
             };
-            if state.transfer_cancel_timed_out.get() {
-                state.hide_stalled_transfer_progress();
-            } else if state.transfer_progress.get().is_some() {
+            if state.transfer_progress.get().is_some() {
                 state.request_transfer_cancel(&on_cancel);
-            } else {
+            } else if !state.transfer_cancel_requested.replace(true) {
+                if let Some(view) = state.file_progress_view.borrow().as_ref() {
+                    view.cancel.set_sensitive(false);
+                    view.title.set_text("Cancelling operation…");
+                    view.indeterminate.set(true);
+                    ensure_indeterminate_pulse(view);
+                    state.sync_compact(view);
+                }
                 on_cancel();
             }
         });
         let click_action = cancel_action.clone();
         cancel.connect_clicked(move |_| click_action());
-        let escape = gtk::EventControllerKey::new();
-        escape.connect_key_pressed(move |_, key, _, _| {
-            if key == gtk::gdk::Key::Escape {
-                cancel_action();
-                glib::Propagation::Stop
-            } else {
-                glib::Propagation::Proceed
+        if let Some(view) = self.file_progress_view.borrow_mut().as_mut() {
+            view.cancel_action = Some(cancel_action.clone());
+            if self.dock_only.get() {
+                self.attach_dock(view);
             }
-        });
-        if let Some(progress) = self.file_progress_view.borrow().as_ref() {
-            progress.layer.add_controller(escape);
+            if let Some(layer) = view.layer.borrow().as_ref() {
+                presentation::install_progress_keys(layer, &cancel_action);
+            }
         }
         cancel.grab_focus();
         if let Some(view) = self.file_progress_view.borrow().as_ref() {
@@ -333,6 +345,8 @@ impl ViewState {
                 transferred_bytes,
                 total_bytes,
             );
+        } else if let Some((completed, total)) = self.archive_progress.get() {
+            self.update_archive_progress(completed, total);
         } else if self.flushing_to_device.get() {
             self.apply_device_flush_status();
         } else {
@@ -415,14 +429,15 @@ impl ViewState {
         view.transfer_footer.set_visible(true);
         view.transfer_percent.set_text(&status);
         view.transfer_bytes.set_text(&bytes);
-        view.transfer_items.set_tooltip_text(Some(&items));
         view.transfer_items.set_text(&items);
         view.transfer_rate.set_text(&transfer_rate_status(
             self.transfer_rate_bytes_per_second.get(),
             transferred_bytes,
             total_bytes,
         ));
-        view.layer.add_css_class("transfer-progress-dialog");
+        if let Some(layer) = view.layer.borrow().as_ref() {
+            layer.add_css_class("transfer-progress-dialog");
+        }
         view.indeterminate.set(fraction.is_none());
         if let Some(fraction) = fraction {
             view.progress.set_fraction(fraction);
@@ -433,6 +448,9 @@ impl ViewState {
         }
         if self.transfer_cancel_requested.get() {
             self.apply_transfer_cancel_status();
+        }
+        if let Some(view) = self.file_progress_view.borrow().as_ref() {
+            self.sync_compact(view);
         }
     }
 
@@ -463,11 +481,13 @@ impl ViewState {
         };
         if self.transfer_cancel_timed_out.get() {
             view.title.set_text("Device not responding");
-            view.subtitle.set_text("Cancellation is still pending. The device may still be writing; do not unplug it. Return to the browser does not make it safe to eject.");
+            view.subtitle.set_text(
+                "Cancellation is still pending. The device may still be writing; do not unplug it.",
+            );
             view.subtitle.set_wrap(true);
             view.subtitle.set_max_width_chars(60);
-            view.cancel.set_label("Return to browser");
-            view.cancel.set_sensitive(true);
+            view.cancel.set_label("Cancellation requested");
+            view.cancel.set_sensitive(false);
             view.transfer_rate.set_text("Waiting for device…");
         } else {
             view.title.set_text("Cancelling transfer…");
@@ -480,33 +500,7 @@ impl ViewState {
         }
         view.indeterminate.set(true);
         ensure_indeterminate_pulse(view);
-    }
-
-    fn hide_stalled_transfer_progress(&self) {
-        if !self.transfer_cancel_timed_out.get() || self.transfer_warning_banner.borrow().is_some()
-        {
-            return;
-        }
-        let banner = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        banner.add_css_class("transfer-pending-warning");
-        banner.set_halign(gtk::Align::Center);
-        banner.set_valign(gtk::Align::Start);
-        banner.set_margin_top(12);
-        banner.set_can_target(false);
-        let text = gtk::Label::new(Some(
-            "Transfer cancellation pending · Device may still be writing · Do not unplug or use this drive",
-        ));
-        text.set_wrap(true);
-        banner.append(&text);
-        self.overlay.add_overlay(&banner);
-        self.transfer_warning_banner.replace(Some(banner));
-        if let Some(view) = self.file_progress_view.take() {
-            view.indeterminate.set(false);
-            if let Some(source) = view.pulse_source.take() {
-                source.remove();
-            }
-            dismiss_modal_layer(&view.layer, &view.overlay, view.blurred_root.as_ref());
-        }
+        self.sync_compact(view);
     }
 
     pub(super) fn show_device_flush_status(&self) {
@@ -532,6 +526,9 @@ impl ViewState {
         if self.transfer_cancel_requested.get() {
             self.apply_transfer_cancel_status();
         }
+        if let Some(view) = self.file_progress_view.borrow().as_ref() {
+            self.sync_compact(view);
+        }
     }
 
     pub(super) fn update_item_progress(&self, completed: usize, total: usize) {
@@ -553,17 +550,30 @@ impl ViewState {
         view.status.set_text(&new_status);
         view.indeterminate.set(false);
         view.progress.set_fraction(new_fraction);
+        self.sync_compact(view);
     }
 
     pub(super) fn update_archive_progress(&self, completed: usize, total: usize) {
+        self.file_operation_progress.set((completed, total));
+        self.archive_progress.set(Some((completed, total)));
         let progress_view = self.file_progress_view.borrow();
         let Some(view) = progress_view.as_ref() else {
             return;
         };
         view.archive_activity.set_visible(true);
         view.archive_activity.start();
-        if completed == 0 {
-            view.status.set_text("Preparing…");
+        if self.transfer_cancel_requested.get() {
+            view.status.set_text("Stopping…");
+            view.indeterminate.set(true);
+        } else if completed == 0 {
+            let status = if total == 0 {
+                "Preparing…"
+            } else if self.archive_compressing.get() {
+                "Compressing…"
+            } else {
+                "Processing archive…"
+            };
+            view.status.set_text(status);
             view.indeterminate.set(true);
         } else if total == 0 {
             view.status.set_text(&format!("{completed} files"));
@@ -574,28 +584,54 @@ impl ViewState {
             view.indeterminate.set(false);
             view.progress.set_fraction(completed as f64 / total as f64);
         }
+        ensure_indeterminate_pulse(view);
+        self.sync_compact(view);
     }
 
-    pub(super) fn dismiss_file_operation_progress(self: &Rc<Self>) {
+    pub(super) fn complete_file_operation_progress(&self, title: &str) {
+        let compact = self
+            .file_progress_view
+            .borrow_mut()
+            .as_mut()
+            .and_then(|view| view.compact.take());
+        if let Some(compact) = compact {
+            let file = self.transfer_current_file.borrow();
+            let description = self.task_description.borrow();
+            compact.info.set_text(
+                file.as_deref()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or(&description),
+            );
+            let total = self
+                .transfer_progress
+                .get()
+                .and_then(|snapshot| snapshot.total_files)
+                .unwrap_or(self.file_operation_progress.get().1);
+            compact.count.set_text(&format!("{total}/{total}"));
+            compact.count.set_visible(total > 0);
+            compact.completed(title);
+        }
+        self.dismiss_file_operation_progress();
+    }
+
+    pub(super) fn dismiss_file_operation_progress(&self) {
         self.dismiss_file_operation_progress_then(|| {});
     }
 
     pub(super) fn dismiss_file_operation_progress_then(
-        self: &Rc<Self>,
+        &self,
         after_dismiss: impl FnOnce() + 'static,
     ) {
         if let Some(source) = self.pending_file_progress.take() {
             source.remove();
         }
         self.file_operation_progress.set((0, 0));
+        self.archive_progress.set(None);
         if let Some(source) = self.transfer_cancel_timeout.take() {
             source.remove();
         }
         self.transfer_cancel_requested.set(false);
         self.transfer_cancel_timed_out.set(false);
-        if let Some(banner) = self.transfer_warning_banner.take() {
-            self.overlay.remove_overlay(&banner);
-        }
         self.transfer_progress.set(None);
         self.transfer_current_file.take();
         self.transfer_rate_sample.set(None);
@@ -610,26 +646,29 @@ impl ViewState {
             if let Some(source) = view.pulse_source.take() {
                 source.remove();
             }
-            self.file_progress_dismissing.set(true);
-            let weak = Rc::downgrade(self);
-            view.layer.connect_parent_notify(move |layer| {
-                if layer.parent().is_some() {
-                    return;
-                }
-                let Some(state) = weak.upgrade() else {
-                    return;
-                };
-                if !state.file_progress_dismissing.replace(false) {
-                    return;
-                }
-                state.browser.focus_active();
-                let callbacks = state.file_progress_dismiss_waiters.take();
-                for callback in callbacks {
-                    callback();
-                }
-            });
-            dismiss_modal_layer(&view.layer, &view.overlay, view.blurred_root.as_ref());
-        } else if !self.file_progress_dismissing.get() {
+            if let Some(compact) = &view.compact {
+                compact.remove();
+            }
+            if let Some(layer) = view.layer.take() {
+                let pending = self.file_progress_dismissing.clone();
+                let waiters = self.file_progress_dismiss_waiters.clone();
+                pending.set(pending.get() + 1);
+                let finished = Cell::new(false);
+                layer.connect_parent_notify(move |layer| {
+                    if layer.parent().is_none() && !finished.replace(true) {
+                        pending.set(pending.get() - 1);
+                        if pending.get() == 0 {
+                            let callbacks = waiters.take();
+                            for callback in callbacks {
+                                callback();
+                            }
+                        }
+                    }
+                });
+                dismiss_modal_layer(&layer, &view.overlay, view.blurred_root.as_ref());
+            }
+        }
+        if self.file_progress_dismissing.get() == 0 {
             let callbacks = self.file_progress_dismiss_waiters.take();
             for callback in callbacks {
                 callback();
@@ -658,6 +697,7 @@ impl ViewState {
         view.status
             .set_text(&format!("{} deleted", item_count_label(processed)));
         view.indeterminate.set(true);
+        self.sync_compact(view);
     }
 }
 
@@ -666,6 +706,10 @@ fn ensure_indeterminate_pulse(view: &FileProgressView) {
         return;
     }
     let weak_progress = view.progress.downgrade();
+    let compact_progress = view
+        .compact
+        .as_ref()
+        .map(|compact| compact.progress.downgrade());
     let indeterminate = view.indeterminate.clone();
     let pulse_source = view.pulse_source.clone();
     let source = glib::timeout_add_local(INDETERMINATE_PROGRESS_INTERVAL, move || {
@@ -678,6 +722,9 @@ fn ensure_indeterminate_pulse(view: &FileProgressView) {
             return glib::ControlFlow::Break;
         };
         progress.pulse();
+        if let Some(compact) = compact_progress.as_ref().and_then(glib::WeakRef::upgrade) {
+            compact.pulse();
+        }
         glib::ControlFlow::Continue
     });
     view.pulse_source.replace(Some(source));

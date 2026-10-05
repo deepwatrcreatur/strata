@@ -47,6 +47,24 @@ impl Header {
         sidebar_toggle.set_child(Some(&assets::primary_icon(icons::PANEL_LEFT, 17)));
         sidebar_toggle.add_css_class("sidebar-toggle");
         sidebar_toggle.set_cursor_from_name(Some("pointer"));
+        {
+            let toggle = sidebar_toggle.downgrade();
+            preferences.bind_preference(
+                window,
+                PreferenceManager::sidebar_expanded,
+                move |_, expanded| {
+                    if let Some(toggle) = toggle.upgrade() {
+                        toggle.set_active(expanded);
+                    }
+                },
+            );
+        }
+        {
+            let preferences = preferences.clone();
+            sidebar_toggle.connect_toggled(move |toggle| {
+                preferences.set_sidebar_expanded(toggle.is_active());
+            });
+        }
         let location = browser.location_widget();
         location.set_hexpand(true);
         let search = header_action(icons::SEARCH, "Search (Ctrl+K)");
@@ -55,8 +73,12 @@ impl Header {
             build_appearance_menu(browser, &browser.browser(), preferences.clone(), preview);
         let settings = header_action(icons::SETTINGS, "Settings");
         let close = header_action(icons::X, "Close window");
-        let closing_window = window.clone();
-        close.connect_clicked(move |_| closing_window.close());
+        let closing_window = window.downgrade();
+        close.connect_clicked(move |_| {
+            if let Some(window) = closing_window.upgrade() {
+                window.close();
+            }
+        });
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         actions.add_css_class("header-actions");
         actions.append(&search);
@@ -190,7 +212,7 @@ fn bind_sidebar_layout(
         let Some(sidebar) = weak_sidebar.upgrade() else {
             return glib::ControlFlow::Break;
         };
-        // An empty Icons placeholder owns the rail even when it cannot fit.
+        // A reserved empty preview owns the rail even when it cannot fit.
         if weak_preview.is_open()
             || weak_preview.is_suspended()
             || weak_preview.reserves_empty_preview()
@@ -245,13 +267,20 @@ fn bind_sidebar_toggle(
             }
         } else if content.position() < MIN_SIDEBAR_WIDTH {
             content.set_position(MIN_SIDEBAR_WIDTH);
-        } else {
+        } else if content.position()
+            + crate::ui::preview::separator_width(content)
+            + crate::ui::browser::COLUMN_WIDTH
+            < content.width()
+        {
+            // A divider pinned by a narrow window is not the user's choice.
             state.saved_width.set(Some(content.position()));
         }
     });
     let content = content.clone();
     let sidebar_widget = sidebar.widget.clone();
     let toggled_sidebar = Rc::downgrade(&sidebar.state);
+    let initial_content = content.clone();
+    let initial_sidebar = sidebar_widget.clone();
     let toggled_preview = preview.clone();
     toggle.connect_toggled(move |toggle| {
         let open = toggle.is_active();
@@ -289,6 +318,11 @@ fn bind_sidebar_toggle(
             open,
         );
     });
+    if !toggle.is_active() {
+        initial_content.set_position(0);
+        initial_sidebar.set_visible(false);
+        initial_content.set_shrink_start_child(true);
+    }
 }
 
 pub(super) struct FooterBinding {

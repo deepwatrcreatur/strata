@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    rc::Rc,
+    rc::{Rc, Weak},
 };
 
 use gtk::{gio, prelude::*};
+
+#[cfg(test)]
+mod tests;
 
 use crate::{
     assets::{self, icons},
@@ -32,6 +35,39 @@ pub(super) struct ActionMenuSection {
     dispatch: super::commands::MenuDispatch,
     _commands: super::commands::CommandMenus,
     navigation: Rc<super::keyboard::NativeMenuNavigation>,
+    monitor: gio::VolumeMonitor,
+    monitor_handlers: RefCell<Vec<gtk::glib::SignalHandlerId>>,
+    refresh_pending: Cell<bool>,
+    selection: RefCell<Option<SelectionMenuContext>>,
+}
+
+#[derive(Clone)]
+struct SelectionMenuContext {
+    state: Weak<ViewState>,
+    entries: Vec<FileEntry>,
+    parent: Option<PathBuf>,
+}
+
+fn refresh_on_change<T>(
+    menu: &Rc<ActionMenuSection>,
+) -> impl Fn(&gio::VolumeMonitor, &T) + 'static {
+    let menu = Rc::downgrade(menu);
+    move |_, _| {
+        if let Some(menu) = menu.upgrade() {
+            menu.schedule_removable_refresh();
+        }
+    }
+}
+
+impl Drop for ActionMenuSection {
+    fn drop(&mut self) {
+        for handler in self.monitor_handlers.get_mut().drain(..) {
+            self.monitor.disconnect(handler);
+        }
+        if self.popover.parent().is_some() {
+            self.popover.unparent();
+        }
+    }
 }
 
 impl ActionMenuSection {
@@ -41,7 +77,7 @@ impl ActionMenuSection {
         header: Option<&gtk::Widget>,
         anchor: &gtk::Widget,
         transfer_buttons: Option<[gtk::Button; 2]>,
-    ) -> Self {
+    ) -> Rc<Self> {
         let model = gio::Menu::new();
         let root = gio::Menu::new();
         let popover =
@@ -105,18 +141,9 @@ impl ActionMenuSection {
             handler.replace(Some(id));
             clock.request_phase(gtk::gdk::FrameClockPhase::AFTER_PAINT);
         });
-        // The anchor owns the root menu; GTK owns every generated submenu.
-        let weak = popover.downgrade();
-        anchor.connect_destroy(move |_| {
-            if let Some(popover) = weak.upgrade()
-                && popover.parent().is_some()
-            {
-                popover.unparent();
-            }
-        });
         refresh_presentation(&popover, &navigation);
         let transfer_sections = commands.transfer_sections.clone();
-        Self {
+        let menu = Rc::new(Self {
             popover,
             model,
             transfer_sections,
@@ -128,6 +155,52 @@ impl ActionMenuSection {
             dispatch,
             _commands: commands,
             navigation,
+            monitor: gio::VolumeMonitor::get(),
+            monitor_handlers: RefCell::new(Vec::new()),
+            refresh_pending: Cell::new(false),
+            selection: RefCell::new(None),
+        });
+        let monitor = &menu.monitor;
+        if menu.transfer_sections.is_some() {
+            menu.monitor_handlers.replace(vec![
+                monitor.connect_mount_added(refresh_on_change(&menu)),
+                monitor.connect_mount_removed(refresh_on_change(&menu)),
+                monitor.connect_mount_changed(refresh_on_change(&menu)),
+                monitor.connect_volume_added(refresh_on_change(&menu)),
+                monitor.connect_volume_removed(refresh_on_change(&menu)),
+                monitor.connect_volume_changed(refresh_on_change(&menu)),
+                monitor.connect_drive_connected(refresh_on_change(&menu)),
+                monitor.connect_drive_disconnected(refresh_on_change(&menu)),
+                monitor.connect_drive_changed(refresh_on_change(&menu)),
+            ]);
+        }
+        menu
+    }
+
+    fn schedule_removable_refresh(self: &Rc<Self>) {
+        if !self.popover.is_visible() || self.refresh_pending.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        gtk::glib::idle_add_local_once(move || {
+            if let Some(menu) = weak.upgrade() {
+                menu.refresh_pending.set(false);
+                menu.refresh_removable_destinations();
+            }
+        });
+    }
+
+    fn refresh_removable_destinations(&self) {
+        let Some(selection) = self.selection.borrow().clone() else {
+            return;
+        };
+        if !self.popover.is_visible() {
+            return;
+        }
+        if let Some(state) = selection.state.upgrade() {
+            self.rebuild_for_selection(&state, &selection.entries, selection.parent);
+            self.popover.set_visible_submenu(Some("main"));
+            self.navigation.model_changed();
         }
     }
 
@@ -166,6 +239,11 @@ impl ActionMenuSection {
         entries: &[FileEntry],
         parent: Option<PathBuf>,
     ) {
+        self.selection.replace(Some(SelectionMenuContext {
+            state: Rc::downgrade(state),
+            entries: entries.to_vec(),
+            parent: parent.clone(),
+        }));
         #[cfg(test)]
         if let Some(test_override) = state.send_to_menu_test_override.borrow().clone() {
             self.rebuild_for_selection_with_destinations(
@@ -279,6 +357,7 @@ impl ActionMenuSection {
     }
 
     pub(super) fn rebuild_for_folder(&self, state: &Rc<ViewState>, location: &Location) {
+        self.selection.take();
         self.clear();
         let (Some(input), Some(path)) = (folder_input(location), location.native_path()) else {
             refresh_presentation(&self.popover, &self.navigation);
@@ -331,7 +410,7 @@ impl ActionMenuSection {
                     (state.clone(), handle.clone(), paths.clone(), parent.clone());
                 dispatch.defer(move || {
                     if let Some(state) = state.upgrade() {
-                        run_action(&state.overlay, handle, paths, parent, source);
+                        run_action(&state.overlay, handle, paths, parent, source, None);
                     }
                 });
             });
@@ -350,7 +429,6 @@ impl ActionMenuSection {
                 .as_deref())
             {
                 item.set_attribute_value("x-strata-description", Some(&hint.to_variant()));
-                item.set_attribute_value("x-strata-tooltip", Some(&hint.to_variant()));
             }
             let model = if matched.placement == MenuPlacement::Top {
                 &self.model
@@ -450,7 +528,7 @@ pub(super) fn append_send_to_menu(
         let item = gio::MenuItem::new_submenu(Some(&destination.name.replace('_', "__")), &device);
         item.set_icon(&gio::ThemedIcon::new(icons::HARD_DRIVE));
         item.set_attribute_value("x-strata-send-to-device", Some(&true.to_variant()));
-        item.set_attribute_value("x-strata-tooltip", Some(&destination.name.to_variant()));
+        item.set_attribute_value("x-strata-description", Some(&destination.name.to_variant()));
         devices.append_item(&item);
     }
     model.append_submenu(Some("Send to…"), &devices);
@@ -502,7 +580,6 @@ pub(super) fn refresh_presentation(
 struct ItemPresentation {
     label: String,
     description: String,
-    tooltip: Option<String>,
     submenu: Option<gio::MenuModel>,
     icon_size: i32,
     send_to_device: bool,
@@ -521,7 +598,6 @@ fn collect_presentations(model: &gio::MenuModel, items: &mut Vec<ItemPresentatio
             items.push(ItemPresentation {
                 label: label.replace("__", "_"),
                 description: string("x-strata-description").unwrap_or_default(),
-                tooltip: string("x-strata-tooltip"),
                 submenu: model.item_link(index, "submenu"),
                 icon_size: model
                     .item_attribute_value(index, "x-strata-icon-size", None)
@@ -668,7 +744,6 @@ fn present_native_items(
         if item.danger {
             widget.add_css_class("danger");
         }
-        widget.set_tooltip_text(item.tooltip.as_deref());
         label_menu_item(widget, &item);
         if !initialized {
             let mapped_item = item.clone();

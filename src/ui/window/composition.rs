@@ -15,6 +15,7 @@ mod input;
 mod layout;
 mod search;
 mod settings;
+mod tenxer_splash;
 
 pub(super) struct WindowContent {
     pub(super) browser: BrowserView,
@@ -62,20 +63,34 @@ impl WindowContent {
         install_browser_actions(window, &self.browser, preferences);
         let notice = settings::install(window, self, preferences);
         window.set_child(Some(&self.overlay));
+        tenxer_splash::install(window, &self.overlay, preferences);
         let click_browser = self.browser.clone();
-        let click_window = window.clone();
         let click = gtk::GestureClick::new();
         click.set_propagation_phase(gtk::PropagationPhase::Capture);
-        click.connect_pressed(move |_, _, x, y| {
-            click_browser.dismiss_filter_on_outside_click(
-                click_window.upcast_ref::<gtk::Widget>(),
-                x,
-                y,
-            );
+        click.connect_pressed(move |gesture, _, x, y| {
+            if let Some(window) = gesture.widget() {
+                click_browser.dismiss_filter_on_outside_click(&window, x, y);
+            }
         });
         window.add_controller(click);
         input::install_edit_cancellation(window, &self.browser);
         super::install_modal_focus_trap(window);
+        let operation_browser = self.browser.browser();
+        window.connect_close_request(move |window| {
+            if operation_browser.has_background_operations() {
+                crate::ui::modal::show_error_dialog(
+                    window,
+                    "File operations are still active",
+                    "Wait for these operations to finish, or cancel them before closing this window. Cancellation does not undo completed changes.",
+                );
+                gtk::glib::Propagation::Stop
+            } else {
+                gtk::glib::Propagation::Proceed
+            }
+        });
+        window.connect_unrealize(|window| {
+            PreferenceManager::shared().release_bindings_within(window);
+        });
         let top_bar = crate::ui::top_bar_navigation::TopBarNavigation::new(
             &self.header.content,
             &self.sidebar.widget,
@@ -93,7 +108,6 @@ impl WindowContent {
                     preferences: preferences.clone(),
                 },
                 shortcuts: self.footer.shortcuts.clone(),
-                folders: Rc::new(crate::ui::go_completion::GioFolders),
                 history: crate::services::NavigationHistory::shared(),
             },
         );
@@ -116,6 +130,16 @@ impl WindowContent {
     }
 
     #[cfg(test)]
+    pub(super) fn sidebar_toggle(&self) -> &gtk::ToggleButton {
+        &self.header.sidebar_toggle
+    }
+
+    #[cfg(test)]
+    pub(super) fn sidebar_visible(&self) -> bool {
+        self.sidebar.widget.is_visible()
+    }
+
+    #[cfg(test)]
     pub(super) fn footer(&self) -> &crate::ui::shortcut_footer::ShortcutFooter {
         &self.footer.shortcuts
     }
@@ -125,14 +149,23 @@ impl WindowContent {
         &self.overlay
     }
 
+    /// gtk_window_destroy() unrealizes a window but frees it only with its last
+    /// reference, which its own closures can hold, so cleanup cannot wait for
+    /// the destroy signal.
     pub(super) fn connect_cleanup(self, window: &gtk::ApplicationWindow) {
         let browser = self.browser.browser();
+        let progress_view = self.browser.downgrade();
         let sidebar = self.sidebar;
         let footer = self.footer;
-        window.connect_destroy(move |_| {
+        window.connect_unrealize(move |_| {
             footer.disconnect_clipboard();
             browser.bump_navigation_generation();
             browser.clear_observer();
+            if let Some(view) = progress_view.upgrade() {
+                view.dispose_file_progress();
+            }
+            browser.cancel_background_operations();
+            browser.cancel_file_operation();
             sidebar.disconnect();
         });
     }

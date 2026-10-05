@@ -241,30 +241,39 @@ Local archive operations live under `adapters/local_operations/archive/`:
 | --- | --- |
 | Operation entry points, worker lifecycle and progress events | `archive.rs` in the parent directory |
 | Staged publication, source traversal and compression writers | `compression.rs` |
-| Per-operation extraction state, copying, cleanup, size preflight and outcomes | `extraction.rs` |
-| Confined destination writes, path validation and conflict naming | `destination.rs` |
+| Per-operation extraction state, copying, cleanup, size preflight, hard-link resolution, deferred directory metadata and outcomes | `extraction.rs` |
+| Confined destination writes, link creation, mode and time restoration, path validation, staging folder lifecycle, publication and conflict naming | `destination.rs` |
 | ZIP, TAR/gzip and 7z member enumeration, passwords and decoder errors | `decoders.rs` |
 
 Every decoder feeds one `ExtractionSession` per operation. The session has no codec or widget
-API dependencies; decoders lend it member streams and provide already-known pending names on
-cancellation. Member identity tracking stays inside each decoder rather than assuming unique names
-or matching header/callback order. The session validates pending names and applies established
-root renames without filesystem probes or name reservations; final leaf conflicts remain unknown
-until a member is attempted. Sequential formats do not scan unread content to complete that list.
+API dependencies; decoders lend it member streams and the archive name, and provide
+already-known pending names on cancellation. The session writes members into a hidden staging
+folder under the destination and publishes it in `finish` for every outcome: a single root moves
+up verbatim, several roots are renamed to the archive stem, and failed or cancelled output stays
+in the archive-named folder unless it holds only directories. Member identity tracking stays
+inside each decoder rather than assuming unique names or matching header/callback order. The
+session validates pending names and applies established root renames without filesystem probes
+or name reservations; final leaf conflicts remain unknown until a member is attempted. Sequential formats do not scan unread content to complete that list.
 Before writing, the session checks claimed uncompressed size against destination free space from
 `fstatvfs` on the pinned root, and it refuses a member whose extracted size does not match the
 size declared by the archive header. ZIP and 7z advertise a total up front, so an oversized
 archive is refused before any member is written; TAR streams check each member as it arrives, so
-extraction stops at the free-space boundary and members already written stay in place. The
+extraction stops at the free-space boundary and members already written stay inside the
+archive-named folder, which the failure message names. The
 guarantee is that extraction never exceeds the free space observed when the session opened;
 it does not model per-file overhead such as block rounding or inodes. Filesystems that report no
 capacity (`f_blocks == 0`, as FUSE mounts without `statfs` do) skip the free-space checks and
 keep only the declared-size match. The `zip` crate does not bound inflated output by the header
 size itself, so that match is the control that stops a ZIP member lying about its size.
 
-The private member boundary currently retains legacy lossy TAR-name conversion and regular-file
-output for non-directory entries, including links. It is not a complete archive-entry model;
-native names and entry-type semantics belong in the decoder compatibility evaluation. Format
+Decoders pass symlinks, TAR hard links and each member's mode and modification time through
+`MemberContent` and `MemberMetadata`, and refuse FIFOs and device nodes. Restoring metadata is
+best effort: `EPERM`, `EOPNOTSUPP` and `EINVAL` from filesystems without Unix permissions or times
+are ignored behind the `MetadataCalls` seam in `destination.rs`. TAR extraction preserves
+native path bytes, including hard-link target identity. The sandboxed RAR helper streams
+`STRRAR02` records carrying each member's mode and
+time (a RAR 5 FILETIME, or the DOS local time of older formats, which only the parent can
+convert in the user's zone); RAR links are not yet extracted as links. Format
 libraries remain behind the adapter boundary. See [archive creation](archives.md) for
 container-specific encoding, classification and cancellation behavior. Archive unit tests sit in each module's
 adjacent `tests.rs`; provider-level tests remain in `archive/tests.rs`, with shared test-only builders
@@ -356,12 +365,15 @@ particular, editable controls and native single-pane selection must not fall thr
 browser commands. The file chooser retains its separate, restricted keyboard policy
 when 10xer mode is off.
 
-When [10xer mode](10xer-mode.md) is on, that dispatcher skips the default
-`h`/`j`/`k`/`l` arrow remap and command pipeline and runs `keyboard/tenxer.rs`
-instead. The chooser installs the same dispatcher alongside its default map and
-delegates to it while the preference is on: **Enter** / **o** still confirm a
-file, **Esc** cancels after dismissing prompts or preview, and global search /
-Open With stay unavailable. Window-local browse / visual / chord / prompt state
+When [10xer mode](10xer-mode.md) is on, that dispatcher runs its 10xer stages
+(`tenxer_keys` and the `keyboard/` modules) ahead of the default pipeline. The
+chooser builds the same dispatcher with a `ChooserPolicy` and, while the
+preference is on, asks only its 10xer stages first (`ChooserKeys`); keys they
+leave go to the chooser's own restricted map. Window-wide stages such as global
+search, clipboard, and undo never see chooser keys, and `keyboard/chooser.rs`
+refuses commands the request does not allow: **Enter** / **o** confirm a file,
+**Esc** cancels after dismissing prompts or preview, and Open With, custom
+actions, and clipboard verbs stay unavailable. Window-local browse / visual / chord / prompt state
 lives in `ui/tenxer_mode.rs`, not on `Browser`. Per-window preference bindings
 update the shared `gtk::Application` accelerators idempotently; window destruction
 does not restore them while other windows still use 10xer mode.
@@ -373,8 +385,11 @@ pointer-operated. The preference is
 
 Initial binding applies the saved mode without transition teardown. Real transitions
 clear hidden queries and forced recursion, prompts, chords, and preview key ownership.
-Footer preference/observer callbacks and prompt controllers use weak owners so a
-closed window can release its view and bindings. `ui/shortcut_reference.rs` supplies
+Footer preference/observer callbacks and prompt controllers use weak owners.
+`gtk_window_destroy()` unrealizes a window but frees it only with its last
+reference, so window and chooser cleanup, their key controllers, and every
+preference binding anchored inside them are released on unrealize rather than on
+the destroy signal. `ui/shortcut_reference.rs` supplies
 shared Settings/F1 presentation; default F1 navigation remains view-specific.
 
 ## Capability boundaries

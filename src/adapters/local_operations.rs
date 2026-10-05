@@ -4318,6 +4318,9 @@ async fn run_merge_undo(
         };
         let deleted_locations = match result {
             Ok(()) => {
+                if existing_type.is_some() {
+                    super::bookmarks::deletion_completed(std::slice::from_ref(location));
+                }
                 completed_locations.push(location.clone());
                 vec![location.clone()]
             }
@@ -4617,6 +4620,7 @@ async fn run_deletion(
                     failed_locations.push(target.location.clone());
                 }
             } else {
+                super::bookmarks::deletion_completed(std::slice::from_ref(&target.location));
                 deleted_locations.push(target.location.clone());
                 pending_progress_locations.push(target.location.clone());
             }
@@ -5192,6 +5196,12 @@ impl OperationProvider for LocalOperationProvider {
                     }
                 }
             }
+            for location in &request.cleanup_locations {
+                affected_locations.insert(location.clone());
+                if let Some(parent) = location.parent() {
+                    affected_locations.insert(parent);
+                }
+            }
             let sources = request
                 .items
                 .iter()
@@ -5316,11 +5326,46 @@ impl OperationProvider for LocalOperationProvider {
                 &emit,
                 request.id,
                 &completed,
-                affected_locations,
+                affected_locations.clone(),
             )
             .await
             {
                 return;
+            }
+            for location in &request.cleanup_locations {
+                let file = gio_file_for_location(location);
+                let result = await_cancellable(
+                    &file,
+                    &operation_cancellable,
+                    |file, cancellable, result| {
+                        file.trash_async(
+                            glib::Priority::DEFAULT,
+                            Some(cancellable),
+                            move |output| {
+                                result.resolve(output);
+                            },
+                        );
+                    },
+                )
+                .await;
+                if let Err(error) = result {
+                    if was_cancelled(&error) {
+                        emit(cancelled_event(
+                            request.id,
+                            completed,
+                            Vec::new(),
+                            vec![location.clone()],
+                            affected_locations,
+                        ));
+                    } else {
+                        emit(OperationEvent::TransferFailed {
+                            request_id: request.id,
+                            completed_locations: completed,
+                            message: error.to_string(),
+                        });
+                    }
+                    return;
+                }
             }
             emit(OperationEvent::Pasted {
                 request_id: request.id,
