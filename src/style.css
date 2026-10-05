@@ -197,6 +197,16 @@ headerbar menubutton.header-action > button:focus-visible {
   min-height: 36px;
 }
 
+.tab-strip button.header-action {
+  padding: 0;
+  margin: 4px 0;
+}
+
+/* Keep the smaller close control centered over Settings. */
+.tab-strip .header-actions button.header-action {
+  margin-right: 4px;
+}
+
 .tab-strip button.header-action:focus-visible,
 .tab-close:focus-visible {
   outline: 2px solid @strata_accent;
