@@ -55,6 +55,7 @@ impl TabStrip {
         accessibility::set_label(&row, "Tabs");
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let end = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        end.add_css_class("header-actions");
         let flow = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         flow.append(&row);
         flow.append(&actions);
