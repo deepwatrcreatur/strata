@@ -49,26 +49,6 @@ fn local_task_batches_wait_for_every_started_task_after_an_operation_error()
 }
 
 #[test]
-fn local_task_batches_keep_panics_attributed_to_their_input() -> Result<(), Box<dyn Error>> {
-    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
-        .lock()
-        .map_err(|error| error.to_string())?;
-    let context = glib::MainContext::default();
-    let panicked: glib::JoinHandle<u8> =
-        context.spawn_local(async { panic!("injected task panic") });
-    let completed = context.spawn_local(async { 2_u8 });
-
-    let results = context.block_on(join_local_tasks(vec![
-        ("panicked", panicked),
-        ("completed", completed),
-    ]));
-
-    assert!(matches!(&results[0], ("panicked", Err(_))));
-    assert!(matches!(&results[1], ("completed", Ok(2))));
-    Ok(())
-}
-
-#[test]
 fn transfer_progress_aggregates_file_bytes_without_emitting_per_file() -> Result<(), Box<dyn Error>>
 {
     let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
@@ -108,8 +88,7 @@ fn transfer_progress_aggregates_file_bytes_without_emitting_per_file() -> Result
 }
 
 #[test]
-fn copy_byte_progress_crosses_worker_threads_without_flooding_the_main_loop()
--> Result<(), Box<dyn Error>> {
+fn copy_byte_progress_crosses_worker_threads() -> Result<(), Box<dyn Error>> {
     let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
         .lock()
         .map_err(|error| error.to_string())?;

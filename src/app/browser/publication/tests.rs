@@ -122,8 +122,8 @@ fn assert_selection_then_sorting(events: &[BrowserEvent], focused: usize) {
 fn chunks_are_bounded_by_budget_snapshot_and_current_model() {
     for (published, total, available, expected) in [
         (128, 5000, 5000, INITIAL_PUBLISH_CHUNK),
-        (128, 700, 900, INITIAL_PUBLISH_CHUNK),
-        (128, 900, 700, INITIAL_PUBLISH_CHUNK),
+        (128, 400, 900, 272),
+        (128, 900, 400, 272),
         (700, 700, 900, 0),
         (700, 900, 700, 0),
         (700, 900, 600, 0),
@@ -142,26 +142,6 @@ fn chunks_are_bounded_by_budget_snapshot_and_current_model() {
         };
         assert_eq!(staged.next_chunk(available), (published, expected));
     }
-}
-
-#[test]
-fn publication_chunks_adapt_within_bounds() {
-    assert_eq!(
-        adjusted_chunk_size(INITIAL_PUBLISH_CHUNK, Duration::from_millis(13)),
-        INITIAL_PUBLISH_CHUNK / 2
-    );
-    assert_eq!(
-        adjusted_chunk_size(MIN_PUBLISH_CHUNK, Duration::from_millis(13)),
-        MIN_PUBLISH_CHUNK
-    );
-    assert_eq!(
-        adjusted_chunk_size(INITIAL_PUBLISH_CHUNK, Duration::from_millis(5)),
-        INITIAL_PUBLISH_CHUNK * 2
-    );
-    assert_eq!(
-        adjusted_chunk_size(MAX_PUBLISH_CHUNK, Duration::from_millis(5)),
-        MAX_PUBLISH_CHUNK
-    );
 }
 
 #[test]
@@ -217,14 +197,15 @@ fn staged_boundary_defers_selection_and_completion_until_tails() {
 #[test]
 fn slow_observers_yield_between_chunks_without_early_completion() {
     let _guard = ASYNC_MAIN_CONTEXT_DEFAULT.lock().expect("async test lock");
-    let total = FIRST_PUBLISH_COUNT + INITIAL_PUBLISH_CHUNK * 2 + 9;
+    let total = FIRST_PUBLISH_COUNT + INITIAL_PUBLISH_CHUNK * 4;
     let fixture = Fixture::new(total);
     let delayed = Rc::new(Cell::new(false));
     let observed = delayed.clone();
     fixture.browser.observe(move |event| {
-        if matches!(event, BrowserEvent::EntriesPublished { .. }) && !observed.replace(true) {
-            // Consume the slice deliberately; this is not a wait for async state.
-            std::thread::sleep(PUBLISH_SLICE_BUDGET);
+        if matches!(event, BrowserEvent::EntriesPublished { .. }) {
+            observed.set(true);
+            // Simulate a costly subscriber, rather than waiting for asynchronous state.
+            std::thread::sleep(PUBLISH_CHUNK_BUDGET + Duration::from_millis(1));
         }
     });
     fixture.publish();
@@ -250,7 +231,11 @@ fn slow_observers_yield_between_chunks_without_early_completion() {
         chunks.first(),
         Some(&(FIRST_PUBLISH_COUNT, INITIAL_PUBLISH_CHUNK))
     );
-    assert!(chunks.len() >= 2, "slow publication must yield: {chunks:?}");
+    assert!(chunks.len() > 3, "slow publication must yield: {chunks:?}");
+    assert!(
+        chunks[2].1 < chunks[1].1,
+        "slow subscribers must shrink later batches: {chunks:?}"
+    );
     assert_eq!(
         chunks.iter().map(|(_, count)| count).sum::<usize>(),
         total - FIRST_PUBLISH_COUNT
