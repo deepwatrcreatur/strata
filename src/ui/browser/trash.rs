@@ -669,7 +669,7 @@ impl ViewState {
             );
             if let Some(state) = confirmed_state.upgrade() {
                 let source = state.delete_animation_source();
-                let trash_button = state.trash_button.borrow().as_ref().cloned();
+                let trash_button = state.trash_button.upgrade();
                 let animation = source.zip(trash_button).and_then(|(source, trash_button)| {
                     super::fly_to_trash::prepare_fly_from_trash(
                         &source,
@@ -744,7 +744,7 @@ impl ViewState {
     fn move_to_trash(self: &Rc<Self>, entries: Vec<FileEntry>) {
         self.pending_delete_entries.replace(entries.clone());
         let source = self.delete_animation_source();
-        let trash_button = self.trash_button.borrow().as_ref().cloned();
+        let trash_button = self.trash_button.upgrade();
         let animation = source.zip(trash_button).and_then(|(source, trash_button)| {
             super::fly_to_trash::prepare_fly_to_trash(&source, entries.iter(), &trash_button)
         });
