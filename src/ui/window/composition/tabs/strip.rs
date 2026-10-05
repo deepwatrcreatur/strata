@@ -25,6 +25,7 @@ struct Header {
     select: gtk::Button,
     label: gtk::Label,
     hint: gtk::Label,
+    close_icons: gtk::Stack,
 }
 
 #[derive(Default)]
@@ -54,8 +55,10 @@ impl TabStrip {
         row.set_accessible_role(gtk::AccessibleRole::TabList);
         accessibility::set_label(&row, "Tabs");
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        actions.set_valign(gtk::Align::Center);
         let end = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         end.add_css_class("header-actions");
+        end.set_valign(gtk::Align::Center);
         let flow = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         flow.append(&row);
         flow.append(&actions);
@@ -172,7 +175,7 @@ impl TabStrip {
         select.set_accessible_role(gtk::AccessibleRole::Tab);
         select.add_css_class("tab-select");
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let label = gtk::Label::new(Some("HOME"));
+        let label = gtk::Label::new(None);
         label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         label.set_max_width_chars(22);
         let hint = gtk::Label::new(None);
@@ -182,6 +185,25 @@ impl TabStrip {
         content.append(&hint);
         select.set_child(Some(&content));
         let close = layout::header_action(crate::assets::icons::X, "Close tab (Ctrl+W)");
+        close.remove_css_class("header-action");
+        let close_icons = gtk::Stack::new();
+        close_icons.set_halign(gtk::Align::Center);
+        close_icons.set_valign(gtk::Align::Center);
+        for (name, icon) in [
+            (
+                "inactive",
+                crate::assets::text_icon(crate::assets::icons::X, 10),
+            ),
+            (
+                "active",
+                crate::assets::primary_icon(crate::assets::icons::X, 10),
+            ),
+        ] {
+            icon.set_halign(gtk::Align::Center);
+            icon.set_valign(gtk::Align::Center);
+            close_icons.add_named(&icon, Some(name));
+        }
+        close.set_child(Some(&close_icons));
         accessibility::set_label(&close, "Close tab");
         close.add_css_class("tab-close");
         widget.append(&select);
@@ -216,6 +238,7 @@ impl TabStrip {
             select,
             label,
             hint,
+            close_icons,
         });
         self.label(
             id,
@@ -224,17 +247,16 @@ impl TabStrip {
     }
 
     pub(super) fn label(&self, id: u64, name: &str) {
-        if let Some(header) = self.headers.borrow().iter().find(|header| header.id == id) {
-            let text = name.to_uppercase();
-            if header.label.text() != text {
-                header.label.set_ellipsize(if text.chars().count() > 22 {
-                    gtk::pango::EllipsizeMode::End
-                } else {
-                    gtk::pango::EllipsizeMode::None
-                });
-                header.label.set_text(&text);
-                accessibility::set_label(&header.select, name);
-            }
+        if let Some(header) = self.headers.borrow().iter().find(|header| header.id == id)
+            && header.label.text() != name
+        {
+            header.label.set_ellipsize(if name.chars().count() > 22 {
+                gtk::pango::EllipsizeMode::End
+            } else {
+                gtk::pango::EllipsizeMode::None
+            });
+            header.label.set_text(name);
+            accessibility::set_label(&header.select, name);
         }
     }
 
@@ -244,8 +266,10 @@ impl TabStrip {
             let active = header.id == id;
             if active {
                 header.widget.add_css_class("active");
+                header.close_icons.set_visible_child_name("active");
             } else {
                 header.widget.remove_css_class("active");
+                header.close_icons.set_visible_child_name("inactive");
             }
         }
         let selected_headers = Rc::downgrade(&self.headers);

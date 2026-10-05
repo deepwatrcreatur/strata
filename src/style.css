@@ -104,7 +104,8 @@ headerbar > windowhandle > box {
 }
 
 headerbar button,
-headerbar menubutton {
+headerbar menubutton,
+button.header-action {
   margin-top: 0;
   margin-bottom: 0;
 }
@@ -126,8 +127,9 @@ headerbar .sidebar-toggle {
 }
 
 headerbar .sidebar-toggle,
-headerbar button.header-action,
-headerbar menubutton.header-action > button {
+button.header-action,
+headerbar menubutton.header-action > button,
+.tab-close {
   background: transparent;
   background-image: none;
   border: none;
@@ -140,16 +142,18 @@ headerbar menubutton.header-action > button {
 }
 
 headerbar .sidebar-toggle:hover,
-headerbar button.header-action:hover,
+button.header-action:hover,
 headerbar menubutton.header-action > button:hover,
-headerbar button.header-action.active {
+button.header-action.active,
+.tab-close:hover {
   background: alpha(@strata_accent, 0.15);
 }
 
 headerbar .sidebar-toggle:active,
-headerbar button.header-action:active,
+button.header-action:active,
 headerbar menubutton.header-action > button:active,
-headerbar menubutton.header-action > button:checked {
+headerbar menubutton.header-action > button:checked,
+.tab-close:active {
   background: alpha(@strata_accent, 0.22);
   transform: scale(0.97);
 }
@@ -159,7 +163,8 @@ headerbar menubutton.header-action > button:checked {
   padding: 0 6px 0 0;
 }
 
-headerbar image {
+headerbar image,
+button.header-action image {
   -gtk-icon-size: 16px;
 }
 
@@ -171,15 +176,15 @@ menubutton.icons-thumbnail-menu > button image,
   -gtk-icon-size: 16px;
 }
 
-headerbar button.header-action,
+button.header-action,
 headerbar menubutton.header-action > button {
   color: @strata_text;
 }
 
-headerbar button.header-action:hover,
-headerbar button.header-action:active,
-headerbar button.header-action.active,
-headerbar button.header-action:focus-visible,
+button.header-action:hover,
+button.header-action:active,
+button.header-action.active,
+button.header-action:focus-visible,
 headerbar menubutton.header-action > button:hover,
 headerbar menubutton.header-action > button:active,
 headerbar menubutton.header-action > button:checked,
@@ -193,38 +198,21 @@ headerbar menubutton.header-action > button:focus-visible {
   min-height: 36px;
 }
 
-.tab-strip button.header-action {
-  background: transparent;
-  background-image: none;
-  border: none;
-  border-radius: 5px;
-  box-shadow: none;
-  color: @strata_text;
-  min-width: 24px;
-  min-height: 24px;
-  padding: 4px;
-}
-
-.tab-strip button.header-action:hover {
-  background: alpha(@strata_accent, 0.15);
-}
-
-.tab-strip button.header-action:active {
-  background: alpha(@strata_accent, 0.22);
-}
-
-.tab-strip button.header-action:focus-visible {
+.tab-strip button.header-action:focus-visible,
+.tab-close:focus-visible {
   outline: 2px solid @strata_accent;
   outline-offset: -2px;
 }
 
 .browser-tab {
-  color: alpha(@strata_text, 0.7);
+  color: @strata_text;
+  opacity: 0.5;
   padding: 0 4px 2px 0;
 }
 
 .browser-tab.active {
   color: @strata_accent;
+  opacity: 1;
 }
 
 .tab-strip .tab-select {
@@ -237,13 +225,12 @@ headerbar menubutton.header-action > button:focus-visible {
   min-height: 28px;
   padding: 3px 8px 3px 14px;
   font-weight: 600;
-  letter-spacing: 1px;
 }
 
 .tab-strip .tab-select:hover,
 .tab-strip .tab-select:active {
   background: alpha(@strata_accent, 0.12);
-  color: @strata_accent;
+  color: inherit;
 }
 
 .tab-strip .tab-select:focus-visible {
