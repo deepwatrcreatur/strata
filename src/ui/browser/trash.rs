@@ -984,7 +984,13 @@ impl ViewState {
             confirm.set_sensitive(true);
             spinner.stop();
             spinner.set_visible(false);
-            confirm.grab_focus();
+            let confirm = confirm.clone();
+            glib::idle_add_local_once(move || {
+                confirm.grab_focus();
+                if let Some(window) = confirm.root().and_downcast::<gtk::Window>() {
+                    window.set_focus_visible(true);
+                }
+            });
         });
         let task = Rc::new(task);
         let closing_task = task.clone();
