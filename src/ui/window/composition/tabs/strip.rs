@@ -208,6 +208,22 @@ impl TabStrip {
         close.add_css_class("tab-close");
         widget.append(&select);
         widget.append(&close);
+        let hover = gtk::EventControllerMotion::new();
+        let hovered_icons = close_icons.downgrade();
+        hover.connect_contains_pointer_notify(move |hover| {
+            let Some(widget) = hover.widget() else {
+                return;
+            };
+            if hover.contains_pointer() {
+                widget.add_css_class("hovered");
+            } else {
+                widget.remove_css_class("hovered");
+            }
+            if let Some(icons) = hovered_icons.upgrade() {
+                sync_close_icon(&widget, &icons);
+            }
+        });
+        widget.add_controller(hover);
         self.row.append(&widget);
         let weak = Rc::downgrade(state);
         select.connect_clicked(move |_| {
@@ -266,11 +282,10 @@ impl TabStrip {
             let active = header.id == id;
             if active {
                 header.widget.add_css_class("active");
-                header.close_icons.set_visible_child_name("active");
             } else {
                 header.widget.remove_css_class("active");
-                header.close_icons.set_visible_child_name("inactive");
             }
+            sync_close_icon(&header.widget, &header.close_icons);
         }
         let selected_headers = Rc::downgrade(&self.headers);
         let selected_indicator = self.indicator.clone();
@@ -356,6 +371,11 @@ impl TabStrip {
         drop(headers);
         self.select(self.indicator.active.get());
     }
+}
+
+fn sync_close_icon(widget: &impl IsA<gtk::Widget>, icons: &gtk::Stack) {
+    let accent = widget.has_css_class("active") || widget.has_css_class("hovered");
+    icons.set_visible_child_name(if accent { "active" } else { "inactive" });
 }
 
 fn install_reordering(state: &Rc<TabWindow>, id: u64, widget: &gtk::Button) {

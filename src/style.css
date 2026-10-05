@@ -144,8 +144,7 @@ headerbar menubutton.header-action > button,
 headerbar .sidebar-toggle:hover,
 button.header-action:hover,
 headerbar menubutton.header-action > button:hover,
-button.header-action.active,
-.tab-close:hover {
+button.header-action.active {
   background: alpha(@strata_accent, 0.15);
 }
 
@@ -210,7 +209,8 @@ headerbar menubutton.header-action > button:focus-visible {
   padding: 0 4px 2px 0;
 }
 
-.browser-tab.active {
+.browser-tab.active,
+.browser-tab.hovered {
   color: @strata_accent;
   opacity: 1;
 }
@@ -228,8 +228,9 @@ headerbar menubutton.header-action > button:focus-visible {
 }
 
 .tab-strip .tab-select:hover,
-.tab-strip .tab-select:active {
-  background: alpha(@strata_accent, 0.12);
+.tab-strip .tab-select:active,
+.tab-strip .tab-close:hover {
+  background: transparent;
   color: inherit;
 }
 
