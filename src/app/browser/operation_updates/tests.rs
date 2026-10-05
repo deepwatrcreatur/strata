@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::*;
+use crate::test_support::ASYNC_MAIN_CONTEXT_DEFAULT;
 
 fn queue_until_terminal(browser: &Rc<Browser>, restoring: bool) -> impl FnOnce() {
     let request_id = browser.begin_operation();
@@ -20,6 +21,64 @@ fn queue_until_terminal(browser: &Rc<Browser>, restoring: bool) -> impl FnOnce()
                 locations: Vec::new(),
             }
         });
+    }
+}
+
+#[test]
+fn operation_reconciliation_replaces_stale_rows_without_an_empty_publication() {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT.lock().expect("async test lock");
+    for uri_base in [None, Some("trash://")] {
+        let (browser, events, source) = scripted_browser(ScriptedSource {
+            uri_base,
+            ..ScriptedSource::manual(vec![], vec![])
+        });
+        let root = uri_base.map_or_else(
+            || Location::local("/fixture"),
+            |_| Location::uri("trash:///"),
+        );
+        browser.navigate(root);
+        let (id, emit) = source.enumerate_calls.borrow()[0].clone();
+        emit(DirectoryEvent::Batch {
+            request_id: id,
+            entries: vec![source.listed_entry("stale", false)],
+        });
+        emit(DirectoryEvent::Finished {
+            request_id: id,
+            truncated: false,
+            can_trash: None,
+            can_delete: None,
+        });
+        assert_eq!(column_names(&browser, 0), ["stale"]);
+        browser.select_all(0);
+        events.borrow_mut().clear();
+
+        browser.refresh_operation_columns(&[0]);
+        assert_eq!(column_names(&browser, 0), ["stale"]);
+        let (id, emit) = source.enumerate_calls.borrow()[1].clone();
+        emit(DirectoryEvent::Batch {
+            request_id: id,
+            entries: vec![source.listed_entry("current", false)],
+        });
+        assert_eq!(column_names(&browser, 0), ["stale"]);
+        emit(DirectoryEvent::Finished {
+            request_id: id,
+            truncated: false,
+            can_trash: None,
+            can_delete: None,
+        });
+        assert_eq!(column_names(&browser, 0), ["current"]);
+        assert_eq!(browser.selected_count(), 0);
+        assert!(browser.selected_entries().is_empty());
+        assert!(
+            events
+                .borrow()
+                .iter()
+                .any(|event| matches!(event, BrowserEvent::EntriesReplaced { depth: 0, count: 1 }))
+        );
+        assert!(!events.borrow().iter().any(|event| matches!(
+            event,
+            BrowserEvent::ColumnReloaded { .. } | BrowserEvent::EntriesReplaced { count: 0, .. }
+        )));
     }
 }
 

@@ -998,6 +998,7 @@ impl NavigationState {
             .map(|entry| entry.location.clone())
             .or_else(|| column.selection_target.clone());
         column.pending_selection = column.selected_locations.materialize(&column.entries);
+        column.selected_locations = column.pending_selection.clone().into();
         column.load_state = LoadState::Loading;
         column.truncated = false;
         column.request_id = request_id;
@@ -1012,6 +1013,7 @@ impl NavigationState {
             .map(|entry| entry.location.clone())
             .or_else(|| column.selection_target.clone());
         column.pending_selection = column.selected_locations.materialize(&column.entries);
+        column.selected_locations = column.pending_selection.clone().into();
         column.entries = Vec::new();
         column.invalidate_entry_indexes();
         column.selected = None;
@@ -1179,6 +1181,7 @@ impl NavigationState {
     ) -> Option<usize> {
         let (depth, column) = self.column_for_request_mut(request_id)?;
         column.select_first_on_load = false;
+        column.retain_selected_locations(false);
         column.pending_selection.clear();
         column.truncated = truncated;
         column.can_trash = can_trash;
