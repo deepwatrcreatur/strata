@@ -252,6 +252,7 @@ pub(super) struct ViewState {
     pending_delete_entries: RefCell<Vec<FileEntry>>,
     /// Visible permanent-delete rows captured before the operation mutates the model.
     pending_delete_dissolve: RefCell<Option<(usize, dissolve_delete::PreparedDissolve)>>,
+    delete_dissolve_request: Cell<Option<crate::services::OperationRequestId>>,
     deferred_delete_empty_depth: Cell<Option<usize>>,
     pending_navigate: RefCell<Option<Location>>,
     pending_location_credentials: RefCell<Option<MountCredentials>>,
@@ -626,6 +627,7 @@ impl BrowserView {
             pending_archive_destination: RefCell::new(None),
             pending_delete_entries: RefCell::new(Vec::new()),
             pending_delete_dissolve: RefCell::new(None),
+            delete_dissolve_request: Cell::new(None),
             deferred_delete_empty_depth: Cell::new(None),
             pending_navigate: RefCell::new(None),
             pending_location_credentials: RefCell::new(None),

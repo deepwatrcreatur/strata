@@ -378,20 +378,20 @@ fn tenxer_delete_confirms_trash_and_permanent_deletion() {
                 move_to_named(&fixture, &browser, "b.txt");
                 assert!(fixture.press(key, modifiers));
                 wait_until(|| modal_visible(&fixture.overlay));
-                wait_focused_button(&fixture, "Permanently delete 1 item");
+                let cancel = wait_focused_button(&fixture, "Cancel");
                 pump(300);
                 assert_eq!(
                     focused_button(&fixture).and_then(|button| button.label()),
-                    Some("Permanently delete 1 item".into()),
-                    "the size summary moves focus to Permanently delete"
+                    Some("Cancel".into()),
+                    "the size summary must not move focus to Permanently delete"
                 );
-                assert!(click_class(&fixture.overlay, "action-dialog-cancel"));
+                cancel.emit_clicked();
                 wait_until(|| !modal_visible(&fixture.overlay));
                 assert!(directory.join("b.txt").exists(), "{key:?} cancel keeps it");
             }
             move_to_named(&fixture, &browser, "b.txt");
             shifted(&fixture, Key::D);
-            wait_focused_button(&fixture, "Permanently delete 1 item");
+            wait_focused_button(&fixture, "Cancel");
             assert!(!modal_key(&fixture, Key::d));
             pump(200);
             assert!(

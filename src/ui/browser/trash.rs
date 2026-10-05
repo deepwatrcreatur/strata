@@ -175,6 +175,7 @@ impl ViewState {
     }
 
     pub(super) fn clear_delete_animation(&self) {
+        self.delete_dissolve_request.set(None);
         self.pending_delete_dissolve.take();
     }
 
@@ -984,13 +985,9 @@ impl ViewState {
             confirm.set_sensitive(true);
             spinner.stop();
             spinner.set_visible(false);
-            let confirm = confirm.clone();
-            glib::idle_add_local_once(move || {
+            if !cancel_first {
                 confirm.grab_focus();
-                if let Some(window) = confirm.root().and_downcast::<gtk::Window>() {
-                    window.set_focus_visible(true);
-                }
-            });
+            }
         });
         let task = Rc::new(task);
         let closing_task = task.clone();
