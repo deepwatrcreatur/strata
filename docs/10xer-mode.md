@@ -255,6 +255,7 @@ file-chooser requests do not arm it.
 | --- | --- |
 | **t n** | Open a new tab at the current location |
 | **t x** | Close the active tab (the last tab closes the window) |
+| **t t** | Select the previous tab in strip order, wrapping from first to last |
 | **t 1–9** | Select tabs 1–9 in their current order |
 | **t 0** | Select tab 10 |
 

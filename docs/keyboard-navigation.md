@@ -15,7 +15,8 @@ In regular and 10xer modes, **Ctrl+T** opens a tab at the active location,
 Hold **Ctrl+Shift** to display numbers beside the first ten labels; press
 **Ctrl+Shift+1–9** to select tabs 1–9 or **Ctrl+Shift+0** for tab 10.
 In 10xer mode, **t**, then **n** creates a tab, **t**, then **x** closes it,
-and **t**, then **1–9 / 0** selects tabs 1–10. Escape cancels a pending chord.
+and **t**, then **1–9 / 0** selects tabs 1–10. **t**, then **t** selects the
+previous tab in strip order, wrapping from first to last. Escape cancels a pending chord.
 The last tab's close shortcut closes the window.
 The regular-mode terminal shortcut is **Ctrl+Alt+T**; 10xer keeps **;**, then **t**.
 

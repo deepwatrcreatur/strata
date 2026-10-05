@@ -153,6 +153,7 @@ impl Chord {
             Self::Tabs => &[
                 ("n", "New tab"),
                 ("x", "Close tab"),
+                ("t", "Previous tab"),
                 ("1–9 / 0", "Select tab"),
             ],
         }

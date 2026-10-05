@@ -158,6 +158,7 @@ impl Dispatcher {
         let (action, parameter) = match key {
             Key::n => ("win.new-tab", None),
             Key::x => ("win.close-tab", None),
+            Key::t => ("win.previous-tab", None),
             _ => {
                 let Some(index) = super::super::composition::tab_index(key) else {
                     return false;

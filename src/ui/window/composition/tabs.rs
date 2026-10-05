@@ -103,6 +103,7 @@ impl TabWindow {
                 "toggle-arrow-scope",
                 "new-tab",
                 "close-tab",
+                "previous-tab",
                 "select-tab",
             ] {
                 window.remove_action(name);
@@ -321,6 +322,15 @@ impl TabWindow {
             }
         });
         window.add_action(&close);
+
+        let previous = gio::SimpleAction::new("previous-tab", None);
+        let weak = Rc::downgrade(self);
+        previous.connect_activate(move |_, _| {
+            if let Some(state) = weak.upgrade() {
+                state.cycle(-1);
+            }
+        });
+        window.add_action(&previous);
 
         let select = gio::SimpleAction::new("select-tab", Some(&u32::static_variant_type()));
         let weak = Rc::downgrade(self);

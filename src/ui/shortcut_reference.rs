@@ -568,6 +568,7 @@ fn tenxer_tools(mode: BrowserMode, chooser: bool) -> Vec<(&'static str, &'static
     if !chooser {
         shortcuts.extend_from_slice(&[
             ("t n / t x", "New / close tab"),
+            ("t t", "Previous tab"),
             ("t 1–9 / t 0", "Select tab 1–9 / 10"),
             ("Ctrl+T", "New tab"),
             ("Ctrl+W", "Close the active tab"),
