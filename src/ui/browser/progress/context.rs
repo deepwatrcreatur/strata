@@ -149,10 +149,6 @@ impl ViewState {
             return;
         }
         let deleting = self.file_progress().deleting.get();
-        if deleting {
-            self.pending_delete_dissolve.take();
-            self.deferred_delete_empty_depth.set(None);
-        }
         if !self.browser.background_file_operation(request_id) {
             return;
         }
@@ -227,8 +223,9 @@ impl ViewState {
                 progress.update_item_progress(*completed, *total);
                 false
             }
-            BrowserEvent::DeletionFinished { .. } => {
+            BrowserEvent::DeletionFinished { succeeded } => {
                 self.prune_stale_search_results();
+                self.play_pending_delete_dissolve(*succeeded);
                 true
             }
             BrowserEvent::OperationCompletedWithErrors {
@@ -240,6 +237,7 @@ impl ViewState {
                     background.delete_entries.clone(),
                     retryable_locations,
                 );
+                self.settle_pending_delete_dissolve();
                 if entries.is_empty() {
                     show_error_dialog(&self.overlay, "Completed with errors", message);
                 } else if *has_non_retryable_failures || self.browser.has_foreground_operation() {
@@ -280,6 +278,7 @@ impl ViewState {
                 true
             }
             BrowserEvent::OperationFailed { message } => {
+                self.settle_pending_delete_dissolve();
                 show_error_dialog(&self.overlay, "Unable to complete operation", message);
                 true
             }
@@ -289,6 +288,7 @@ impl ViewState {
                 not_attempted,
                 affected_locations,
             } => {
+                self.settle_pending_delete_dissolve();
                 self.browser.refresh_after_cancellation(affected_locations);
                 let message = format!(
                     "{completed} completed, {failed} failed, and {not_attempted} not attempted.\n\nCompleted changes were not reverted."

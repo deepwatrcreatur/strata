@@ -734,26 +734,13 @@ impl ViewState {
                 self.update_item_progress(*completed, *total);
             }
             BrowserEvent::DeletionFinished { succeeded } => {
-                if let Some((depth, dissolve)) = self.pending_delete_dissolve.take() {
-                    self.deferred_delete_empty_depth.set(Some(depth));
+                if self.pending_delete_dissolve.borrow().is_some() {
                     let succeeded = *succeeded;
                     let weak = Rc::downgrade(self);
                     self.dismiss_file_operation_progress_then(move || {
-                        glib::idle_add_local_once(move || {
-                            let Some(state) = weak.upgrade() else {
-                                return;
-                            };
-                            if succeeded {
-                                let weak = Rc::downgrade(&state);
-                                dissolve.play(move || {
-                                    if let Some(state) = weak.upgrade() {
-                                        state.finish_delete_animation(depth);
-                                    }
-                                });
-                            } else {
-                                state.finish_delete_animation(depth);
-                            }
-                        });
+                        if let Some(state) = weak.upgrade() {
+                            state.play_pending_delete_dissolve(succeeded);
+                        }
                     });
                 } else {
                     self.dismiss_file_operation_progress();
@@ -1156,6 +1143,37 @@ impl ViewState {
                 .borrow()
                 .reveal_selected_entry(depth, position);
         }
+    }
+
+    pub(super) fn play_pending_delete_dissolve(self: &Rc<Self>, succeeded: bool) {
+        let Some((depth, dissolve)) = self.pending_delete_dissolve.take() else {
+            return;
+        };
+        self.deferred_delete_empty_depth.set(Some(depth));
+        let weak = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            let Some(state) = weak.upgrade() else {
+                return;
+            };
+            if succeeded {
+                let weak = Rc::downgrade(&state);
+                dissolve.play(move || {
+                    if let Some(state) = weak.upgrade() {
+                        state.finish_delete_animation(depth);
+                    }
+                });
+            } else {
+                state.finish_delete_animation(depth);
+            }
+        });
+    }
+
+    pub(super) fn settle_pending_delete_dissolve(&self) {
+        let Some((depth, _)) = self.pending_delete_dissolve.take() else {
+            return;
+        };
+        self.deferred_delete_empty_depth.set(Some(depth));
+        self.finish_delete_animation(depth);
     }
 
     fn finish_delete_animation(&self, depth: usize) {
