@@ -416,7 +416,7 @@ fn global_search_combines_home_and_drives_and_refreshes_mounts() {
                     .parent()
                     .expect("search bar")
                     .next_sibling(),
-                Some(dialog.state.results.clone().upcast())
+                Some(dialog.state.body.clone().upcast())
             );
             assert_eq!(
                 dialog.state.status.text(),
@@ -474,6 +474,57 @@ fn global_search_combines_home_and_drives_and_refreshes_mounts() {
                 usb.join("needle.txt")
             );
             assert!(dialog.state.search.borrow().is_none());
+            window.destroy();
+        },
+    );
+}
+
+#[test]
+fn global_search_shows_preview_beside_selected_file_result() {
+    crate::test_support::gtk_test(
+        "ui::search::tests::global_search_shows_preview_beside_selected_file_result",
+        || {
+            let fixture = tempfile::tempdir().expect("fixture");
+            let file = fixture.path().join("preview-target.txt");
+            std::fs::write(&file, "preview test content").expect("write test file");
+            let folder = fixture.path().join("subfolder");
+            std::fs::create_dir(&folder).expect("create folder");
+
+            let (dialog, window) = mapped_dialog(Rc::new(|_| {}));
+            let items = vec![
+                SearchItem::for_test(file.clone(), false),
+                SearchItem::for_test(folder, true),
+            ];
+            render_results(&dialog.state, items, false, SearchCoverage::default());
+            drain_main_context();
+
+            assert_selected(&dialog, 0);
+            assert!(dialog.state.preview_pane.is_visible());
+            assert!(dialog.state.preview_separator.is_visible());
+            assert!(!dialog.state.preview_drawer.is_header_visible());
+
+            emit_key(
+                &dialog,
+                gtk::gdk::Key::Down,
+                gtk::gdk::ModifierType::empty(),
+            );
+            drain_main_context();
+
+            assert_selected(&dialog, 1);
+            assert!(!dialog.state.preview_pane.is_visible());
+            assert!(!dialog.state.preview_separator.is_visible());
+
+            emit_key(&dialog, gtk::gdk::Key::Up, gtk::gdk::ModifierType::empty());
+            drain_main_context();
+
+            assert_selected(&dialog, 0);
+            assert!(dialog.state.preview_pane.is_visible());
+            assert!(dialog.state.preview_separator.is_visible());
+
+            hide(&dialog.state);
+            drain_main_context();
+            assert!(!dialog.state.preview_pane.is_visible());
+
             window.destroy();
         },
     );

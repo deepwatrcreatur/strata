@@ -23,19 +23,20 @@ pub(super) fn install(
     install_history_recorder(&controller, &history);
     let preview = content.preview.clone();
     let search_preferences = preferences.clone();
+    let browser = content.browser.clone();
     let activate =
-        Rc::new(move |item| activate_result(&controller, &preview, &search_preferences, item));
+        Rc::new(move |item| activate_result(&browser, &preview, &search_preferences, item));
     let dismissed_root = content.blurred_root.clone();
     let dismissed_button = content.header.search.clone();
     let dismiss = Rc::new(move || {
         dismissed_root.set_blurred(false);
         dismissed_button.remove_css_class("active");
     });
-    let browser = content.browser.clone();
-    let preview = content.preview.clone();
+    let browser_for_reveal = content.browser.clone();
+    let preview_for_reveal = content.preview.clone();
     let reveal = Rc::new(move |item: SearchItem| {
-        preview.clear_target();
-        browser.reveal_location(Location::local(item.path));
+        preview_for_reveal.clear_target();
+        browser_for_reveal.reveal_location(Location::local(item.path));
     });
     let dialog = SearchDialog::new(activate, reveal, dismiss);
     content.overlay.add_overlay(&dialog.widget());
@@ -136,26 +137,26 @@ fn folder_jump_handler(
 }
 
 fn activate_result(
-    controller: &Rc<Browser>,
+    browser: &super::BrowserView,
     preview: &PreviewDrawer,
     preferences: &PreferenceManager,
     item: SearchItem,
 ) {
+    let controller = browser.browser();
     let location = Location::local(item.path.clone());
     if item.is_directory {
         preview.clear_target();
         controller.navigate(location);
         return;
     }
-    if let Some(parent) = item.path.parent() {
-        controller.navigate(Location::local(parent));
-    }
     if preferences.search_open_files_directly() {
-        controller.open_location(location);
+        preview.clear_target();
+        controller.open_location(location.clone());
+        browser.reveal_location(location);
     } else {
         preview.show(
             FileEntry {
-                location,
+                location: location.clone(),
                 native_name: item.path.file_name().unwrap_or_default().to_os_string(),
                 thumbnail_path: None,
                 display_name: item.name,
@@ -171,5 +172,6 @@ fn activate_result(
             },
             controller.active_depth(),
         );
+        browser.reveal_location(location);
     }
 }

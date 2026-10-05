@@ -144,6 +144,7 @@ struct PreviewState {
     dismissed: Cell<bool>,
     child_pane: Cell<bool>,
     pane: gtk::Box,
+    header: gtk::Box,
     header_handle: gtk::Box,
     icon: gtk::Image,
     title: gtk::Label,
@@ -344,6 +345,7 @@ impl PreviewDrawer {
             dismissed: Cell::new(false),
             child_pane: Cell::new(false),
             pane,
+            header,
             header_handle: header_handle.clone(),
             icon,
             title,
@@ -625,6 +627,15 @@ impl PreviewDrawer {
         self.state.slot.clone().upcast()
     }
 
+    pub fn set_header_visible(&self, visible: bool) {
+        self.state.header.set_visible(visible);
+    }
+
+    #[cfg(test)]
+    pub fn is_header_visible(&self) -> bool {
+        self.state.header.is_visible()
+    }
+
     pub fn is_open(&self) -> bool {
         self.state.revealer.reveals_child()
     }
@@ -658,7 +669,14 @@ impl PreviewDrawer {
     }
 
     pub fn show_after_focus_change(&self, entry: FileEntry, depth: Option<usize>) {
-        self.state.show_after_focus_change(entry, depth);
+        self.state.reserve_columns.set(true);
+        self.state.dismissed.set(false);
+        self.state.set_enabled(true);
+        if let Some(entry) = preview_target(Some(entry)) {
+            self.state.show_after_focus_change(entry, depth);
+        } else {
+            self.state.clear_target();
+        }
     }
 
     pub fn close(&self) {

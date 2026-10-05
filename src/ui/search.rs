@@ -11,8 +11,11 @@ use std::{
 
 use gtk::{gdk, glib, prelude::*};
 
-use crate::services::{
-    NavigationHistory, SearchCoverage, SearchEvent, SearchHandle, SearchItem, index_trees,
+use crate::{
+    model::{EntryKind, FileEntry, Location, MetadataValue},
+    services::{
+        NavigationHistory, SearchCoverage, SearchEvent, SearchHandle, SearchItem, index_trees,
+    },
 };
 
 const MAX_RESULT_UPDATES_PER_FRAME: usize = 8;
@@ -33,6 +36,11 @@ struct SearchState {
     results: gtk::Stack,
     status: gtk::Label,
     truncated_hint: gtk::Box,
+    #[cfg(test)]
+    body: gtk::Box,
+    preview_drawer: super::preview::PreviewDrawer,
+    preview_pane: gtk::Box,
+    preview_separator: gtk::Separator,
     visible_results: RefCell<Vec<SearchItem>>,
     positions: Rc<RefCell<HashMap<gtk::ListBoxRow, usize>>>,
     requested_thumbnails: RefCell<HashSet<PathBuf>>,
@@ -74,7 +82,7 @@ impl SearchDialog {
         panel.add_css_class("search-dialog");
         panel.set_halign(gtk::Align::Center);
         panel.set_valign(gtk::Align::Center);
-        panel.set_size_request(760, 452);
+        panel.set_size_request(840, 480);
         panel.set_vexpand(false);
         panel.set_overflow(gtk::Overflow::Hidden);
 
@@ -125,7 +133,35 @@ impl SearchDialog {
         results.add_named(&status, Some("status"));
         results.add_named(&scroller, Some("results"));
         results.set_visible_child_name("status");
-        panel.append(&results);
+
+        let preferences = super::preferences::PreferenceManager::shared();
+        let preview_drawer = super::preview::PreviewDrawer::new(
+            Rc::new(crate::adapters::LocalPreviewProvider::new(Rc::new(
+                move || preferences.media_preview_backend(),
+            ))),
+            false,
+        );
+        preview_drawer.set_header_visible(false);
+
+        let preview_separator = gtk::Separator::new(gtk::Orientation::Vertical);
+        preview_separator.add_css_class("search-preview-separator");
+        preview_separator.set_visible(false);
+
+        let preview_pane = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        preview_pane.add_css_class("search-preview-pane");
+        preview_pane.set_size_request(360, 360);
+        preview_pane.set_vexpand(true);
+        preview_pane.set_visible(false);
+        preview_pane.append(&preview_drawer.widget());
+
+        let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        body.add_css_class("search-body");
+        body.set_vexpand(true);
+        results.set_hexpand(true);
+        body.append(&results);
+        body.append(&preview_separator);
+        body.append(&preview_pane);
+        panel.append(&body);
 
         let footer = gtk::Box::new(gtk::Orientation::Horizontal, 18);
         footer.add_css_class("search-footer");
@@ -175,6 +211,11 @@ impl SearchDialog {
             results,
             status,
             truncated_hint,
+            #[cfg(test)]
+            body,
+            preview_drawer,
+            preview_pane,
+            preview_separator,
             visible_results: RefCell::new(Vec::new()),
             positions,
             requested_thumbnails: RefCell::new(HashSet::new()),
@@ -201,6 +242,12 @@ impl SearchDialog {
         state.list.connect_row_activated(move |_, row| {
             if let Some(state) = activated.upgrade() {
                 activate_position(&state, row.index());
+            }
+        });
+        let selected = Rc::downgrade(&state);
+        state.list.connect_selected_rows_changed(move |_| {
+            if let Some(state) = selected.upgrade() {
+                update_preview(&state);
             }
         });
         let keys = gtk::EventControllerKey::new();
@@ -569,6 +616,7 @@ fn render_results(
             .list
             .select_row(state.list.row_at_index(restored as i32).as_ref());
     } else if !has_results {
+        close_preview(state);
         let message = if state.history.borrow().is_some() {
             if query_empty {
                 "No folder history yet"
@@ -862,6 +910,7 @@ fn hide(state: &SearchState) {
 }
 
 fn hide_then(state: &SearchState, after_dismiss: impl FnOnce() + 'static) {
+    close_preview(state);
     close_result_menu(state);
     state.generation.set(state.generation.get() + 1);
     record_interaction(state);
@@ -887,6 +936,7 @@ fn hide_then(state: &SearchState, after_dismiss: impl FnOnce() + 'static) {
 }
 
 fn clear_results(state: &SearchState) {
+    close_preview(state);
     state.navigation_started.set(false);
     state.reconciling_results.set(true);
     state.visible_results.borrow_mut().clear();
@@ -899,6 +949,60 @@ fn clear_results(state: &SearchState) {
         state.list.remove(&child);
     }
     state.reconciling_results.set(false);
+}
+
+fn update_preview(state: &SearchState) {
+    let item = state.list.selected_row().and_then(|row| {
+        usize::try_from(row.index())
+            .ok()
+            .and_then(|idx| state.visible_results.borrow().get(idx).cloned())
+    });
+    if let Some(item) = item.filter(|item| !item.is_directory) {
+        let (size, modified) = match std::fs::metadata(&item.path) {
+            Ok(meta) => {
+                let size = MetadataValue::Known(meta.len());
+                let modified = meta
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .and_then(|d| i64::try_from(d.as_secs()).ok())
+                    .map(MetadataValue::Known)
+                    .unwrap_or(MetadataValue::Unknown);
+                (size, modified)
+            }
+            Err(_) => (MetadataValue::Unknown, MetadataValue::Unknown),
+        };
+        let entry = FileEntry {
+            location: Location::local(item.path.clone()),
+            native_name: item.path.file_name().unwrap_or_default().to_os_string(),
+            thumbnail_path: None,
+            display_name: item.name,
+            kind: EntryKind::File,
+            size,
+            modified_unix_seconds: modified,
+            recent_unix_seconds: MetadataValue::Unknown,
+            is_hidden: false,
+            mode: item.mode,
+            image_dimensions: MetadataValue::Unknown,
+            child_count: MetadataValue::Unknown,
+            duration_seconds: MetadataValue::Unknown,
+        };
+        if super::preview::preview_target(Some(entry.clone())).is_some() {
+            state.preview_drawer.show_after_focus_change(entry, None);
+            state.preview_pane.set_visible(true);
+            state.preview_separator.set_visible(true);
+        } else {
+            close_preview(state);
+        }
+    } else {
+        close_preview(state);
+    }
+}
+
+fn close_preview(state: &SearchState) {
+    state.preview_drawer.close();
+    state.preview_pane.set_visible(false);
+    state.preview_separator.set_visible(false);
 }
 
 #[cfg(test)]

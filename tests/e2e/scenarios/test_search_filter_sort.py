@@ -395,6 +395,8 @@ def test_global_search_preview_follows_neighbor_when_same_folder_result_is_delet
         lambda: strata.preview_shows("search preview deletion fixture"),
         "search result preview",
     )
+    strata.wait_for_selection([previewed.name], directory=folder.name)
+    strata.wait_for_focused_entry(previewed.name)
     previewed.unlink()
     strata.wait(
         lambda: strata.preview_shows("remaining file"),
@@ -478,6 +480,38 @@ def test_global_search_reveal(strata, mode, directory, route):
     strata.wait_for_selection([target.name], directory=parent.name)
     strata.wait_for_focused_entry(target.name)
     assert strata.window.find(role="text", states={"editable"}) is None
+
+
+@pytest.mark.parametrize("mode", ALL_MODES)
+def test_global_search_file_activation_selects_and_previews(strata, mode):
+    parent = strata.environment.home / "activation-parent"
+    parent.mkdir()
+    (parent / "alpha.txt").write_text("first file\n")
+    target = parent / "omega-target.txt"
+    target.write_text("preview activation target\n")
+    (parent / "zeta.txt").write_text("last file\n")
+
+    strata.keyboard.press("ctrl+k")
+    field = strata.editable_field()
+    strata.keyboard.type_text(target.name)
+    strata.wait(
+        lambda: next(
+            (node for node in strata.window.find_all(role="list item")
+             if node.name.endswith(f"/{target.name}")),
+            None,
+        ),
+        "global search result",
+    )
+    strata.keyboard.press("Return")
+    strata.wait_for_directory(parent.name)
+    strata.wait_for_selection([target.name], directory=parent.name)
+    strata.wait_for_focused_entry(target.name)
+    strata.wait(
+        lambda: strata.preview_shows("preview activation target"),
+        "search result preview",
+    )
+    assert strata.window.find(role="text", states={"editable"}) is None
+
 
 
 @pytest.mark.preferences(tenxer_mode=True, type_to_search=False, single_click_previews=False)
