@@ -35,6 +35,41 @@ def test_single_click_opens_a_directory(strata, mode):
 
 
 @SINGLE_CLICK
+@pytest.mark.preferences(browser_mode="columns", single_click_previews=False)
+@pytest.mark.parametrize("reveal_during_press", [False, True])
+def test_single_click_opens_a_folder_in_a_clipped_parent_column(
+    strata, unreserved_columns, reveal_during_press,
+):
+    browser_left = strata.pane().screen_bounds().x
+    strata.fixture.populate({
+        "documents": {"Level 2": {"Level 3": {"old-branch.txt": "old branch\n"}}},
+    })
+    for name in ["documents", "Level 2", "Level 3"]:
+        strata.select_entry_with_keyboard(name)
+        strata.keyboard.press("Return")
+        strata.wait_for_directory(name)
+
+    folder = strata.entry("pictures", directory=strata.fixture.root.name)
+    bounds = folder.screen_bounds()
+    strata.pointer.move_to(max(bounds.x, browser_left) + 12, bounds.center[1])
+    strata.pointer.connection.button(1, True)
+    try:
+        if reveal_during_press:
+            # Pan under a parked pointer to exercise camera motion independently
+            # of toolkit-specific focus scrolling on mouse-down.
+            for _ in range(3):
+                strata.pointer.connection.button(6, True)
+                strata.pointer.connection.button(6, False)
+        time.sleep(0.2)
+    finally:
+        strata.pointer.connection.button(1, False)
+
+    strata.wait_for_directory("pictures")
+    strata.entry("diagram.txt", directory="pictures")
+    strata.wait_for_selection([], "pictures")
+
+
+@SINGLE_CLICK
 @pytest.mark.parametrize("mode", ALL_MODES)
 def test_keyboard_open_selects_the_first_child(strata, mode):
     strata.select_entry_with_keyboard("documents")

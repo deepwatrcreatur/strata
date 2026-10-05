@@ -371,7 +371,11 @@ pub(super) fn column_rows(
             rename_position_for_press.set(None);
             was_selected_for_press.set(false);
             press_moved_for_press.set(false);
-            press_origin_for_press.set((x, y));
+            // Focusing a parent can scroll the row beneath a stationary pointer.
+            let Some(press) = gesture.current_event().and_then(|event| event.position()) else {
+                return;
+            };
+            press_origin_for_press.set(press);
             if let Some(state) = weak_state_for_click.upgrade() {
                 state.cancel_click_rename();
             }
@@ -481,7 +485,7 @@ pub(super) fn column_rows(
                         pending_activation_for_press.replace(Some(PendingPointerActivation {
                             position,
                             location,
-                            press: (x, y),
+                            press,
                             moved: false,
                             kind,
                         }));
@@ -545,7 +549,7 @@ pub(super) fn column_rows(
                         pending_activation_for_press.replace(Some(PendingPointerActivation {
                             position: source_position,
                             location: entry.location.clone(),
-                            press: (x, y),
+                            press,
                             moved: false,
                             kind: PendingActivationKind::Standard { preview },
                         }));
@@ -553,29 +557,32 @@ pub(super) fn column_rows(
                 }
             }
         });
-        selection_click.connect_update(move |gesture, sequence| {
-            if let (Some(pending), Some((x, y)), Some(widget)) = (
-                pending_activation_for_motion.borrow_mut().as_mut(),
-                gesture.point(sequence),
-                gesture.widget(),
-            ) {
-                pending.update(x, y, widget.settings().gtk_dnd_drag_threshold());
+        selection_click.connect_update(move |gesture, _| {
+            let Some((x, y)) = gesture.current_event().and_then(|event| event.position()) else {
+                return;
+            };
+            let Some(widget) = gesture.widget() else {
+                return;
+            };
+            let threshold = widget.settings().gtk_dnd_drag_threshold();
+            if let Some(pending) = pending_activation_for_motion.borrow_mut().as_mut() {
+                pending.update(x, y, threshold);
             }
-            if let (Some((x, y)), Some(widget)) = (gesture.point(sequence), gesture.widget()) {
-                let origin = press_origin_for_update.get();
-                if crate::ui::pointer::exceeds_drag_threshold(
-                    origin,
-                    (x, y),
-                    widget.settings().gtk_dnd_drag_threshold(),
-                ) {
-                    press_moved_for_update.set(true);
-                }
+            if crate::ui::pointer::exceeds_drag_threshold(
+                press_origin_for_update.get(),
+                (x, y),
+                threshold,
+            ) {
+                press_moved_for_update.set(true);
             }
         });
         let weak_state_for_release = weak_state.clone();
         let search_results_for_release = search_results_for_factory.clone();
-        selection_click.connect_released(move |gesture, count, x, y| {
+        selection_click.connect_released(move |gesture, count, _, _| {
             let pending = pending_activation_for_release.take();
+            let Some((x, y)) = gesture.current_event().and_then(|event| event.position()) else {
+                return;
+            };
             if pending.is_none()
                 && count == 1
                 && !press_moved_for_release.get()
