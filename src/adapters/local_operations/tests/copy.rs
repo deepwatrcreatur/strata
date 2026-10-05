@@ -3,6 +3,52 @@
 use super::*;
 
 #[test]
+fn nested_copy_shares_one_worker_budget_across_subdirectories() -> Result<(), Box<dyn Error>> {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let root = tempfile::tempdir()?;
+    let source = root.path().join("source");
+    let target = root.path().join("target");
+    for folder in 0..9 {
+        let directory = source.join(folder.to_string());
+        fs::create_dir_all(&directory)?;
+        for file in 0..9 {
+            fs::write(directory.join(file.to_string()), format!("{folder}/{file}"))?;
+        }
+    }
+    COPY_ACTIVITY.with(|activity| activity.set((0, 0)));
+    glib::MainContext::default().block_on(super::super::copy_recursively_local(
+        Arc::new(open_local_parent_directory(root.path())?),
+        OsString::from("source"),
+        gio::File::for_path(&target),
+        super::super::CopyOptions {
+            overwrite_existing: false,
+            fat_family: false,
+            workers: 2,
+        },
+        gio::Cancellable::new(),
+        None,
+        None,
+    ))?;
+    let (active, peak) = COPY_ACTIVITY.with(Cell::get);
+    assert_eq!(active, 0, "all file copies must settle before completion");
+    assert!(
+        peak <= 2,
+        "nested directories exceeded the copy budget: {peak}"
+    );
+    for folder in 0..9 {
+        for file in 0..9 {
+            assert_eq!(
+                fs::read_to_string(target.join(format!("{folder}/{file}")))?,
+                format!("{folder}/{file}")
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn recursive_copy_preserves_nested_directory_contents() -> Result<(), Box<dyn Error>> {
     let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
         .lock()

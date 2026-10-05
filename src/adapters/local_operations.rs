@@ -1308,6 +1308,7 @@ fn fat_family_child_name(name: &OsStr, fat_family: bool, used: &mut HashSet<OsSt
 struct CopyOptions {
     overwrite_existing: bool,
     fat_family: bool,
+    workers: usize,
 }
 
 fn target_is_fat_family(target: &gio::File, mounts: &MountTable) -> bool {
@@ -1624,7 +1625,7 @@ async fn copy_new_remote_file_with(
 /// reflink optimisation) through a `/proc/self/fd` reference pinned to the
 /// exact file just verified, rather than the original, re-resolvable path.
 fn copy_recursively_local(
-    parent: OwnedFd,
+    parent: Arc<OwnedFd>,
     name: OsString,
     target: gio::File,
     options: CopyOptions,
@@ -1636,7 +1637,7 @@ fn copy_recursively_local(
         if cancellable.is_cancelled() {
             return Err(cancelled_local_operation());
         }
-        let step_parent = parent.try_clone().map_err(io_error)?;
+        let step_parent = parent.clone();
         let step_name = name.clone();
         let step =
             run_local_fs_step(move || open_local_copy_source(&step_parent, &step_name)).await?;
@@ -1651,6 +1652,8 @@ fn copy_recursively_local(
                 .await
             }
             LocalCopySource::File(file) => {
+                #[cfg(test)]
+                let _activity = tests::CopyActivity::start();
                 // Deliberately no NOFOLLOW_SYMLINKS here: `/proc/self/fd/<n>`
                 // is itself reported as a symlink by lstat, even though the
                 // fd it names was already verified to be a plain file. GIO
@@ -1708,11 +1711,12 @@ fn copy_recursively_local(
                     .await?;
                     record_created_copy_root(&created_root, &target).await?;
                 }
+                let handle = Arc::new(handle);
                 let mut used_names = HashSet::with_capacity(children.len());
-                let batch_size = if children.len() > MAX_LOCAL_IO_WORKERS {
-                    MAX_LOCAL_IO_WORKERS
-                } else {
-                    1
+                let batch_size = children.len().min(options.workers).max(1);
+                let child_options = CopyOptions {
+                    workers: options.workers / batch_size,
+                    ..options
                 };
                 for chunk in children.chunks(batch_size) {
                     if cancellable.is_cancelled() {
@@ -1720,7 +1724,7 @@ fn copy_recursively_local(
                     }
                     if batch_size == 1 {
                         let child_name = &chunk[0];
-                        let child_parent = handle.try_clone().map_err(io_error)?;
+                        let child_parent = handle.clone();
                         let target_name =
                             fat_family_child_name(child_name, options.fat_family, &mut used_names);
                         let child_target = target.child(&target_name);
@@ -1728,7 +1732,7 @@ fn copy_recursively_local(
                             child_parent,
                             child_name.clone(),
                             child_target,
-                            options,
+                            child_options,
                             cancellable.clone(),
                             None,
                             progress.clone(),
@@ -1738,7 +1742,7 @@ fn copy_recursively_local(
                         let context = glib::MainContext::default();
                         let mut tasks = Vec::with_capacity(chunk.len());
                         for child_name in chunk {
-                            let child_parent = handle.try_clone().map_err(io_error)?;
+                            let child_parent = handle.clone();
                             let target_name = fat_family_child_name(
                                 child_name,
                                 options.fat_family,
@@ -1753,7 +1757,7 @@ fn copy_recursively_local(
                                     child_parent,
                                     child_name,
                                     child_target,
-                                    options,
+                                    child_options,
                                     cancellable,
                                     None,
                                     progress,
@@ -1803,14 +1807,24 @@ fn copy_recursively_local_path(
         let Some(name) = source_path.file_name().map(OsStr::to_os_string) else {
             return Err(io_error("Invalid copy source"));
         };
+        let source_parent = parent_path.clone();
+        let target_parent = target
+            .path()
+            .and_then(|path| path.parent().map(Path::to_path_buf));
+        let workers = gio::spawn_blocking(move || {
+            local_parent_worker_count(std::iter::once(source_parent).chain(target_parent))
+        })
+        .await
+        .map_err(|_| io_error("Copy worker stopped unexpectedly"))?;
         let parent = run_local_fs_step(move || open_local_parent_directory(&parent_path)).await?;
         copy_recursively_local(
-            parent,
+            Arc::new(parent),
             name,
             target,
             CopyOptions {
                 overwrite_existing,
                 fat_family,
+                workers,
             },
             cancellable,
             created_root,

@@ -40,6 +40,31 @@ mod sync;
 mod trash_capabilities;
 mod undo;
 
+thread_local! {
+    static COPY_ACTIVITY: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+}
+
+pub(super) struct CopyActivity;
+
+impl CopyActivity {
+    pub(super) fn start() -> Self {
+        COPY_ACTIVITY.with(|activity| {
+            let (active, peak) = activity.get();
+            activity.set((active + 1, peak.max(active + 1)));
+        });
+        Self
+    }
+}
+
+impl Drop for CopyActivity {
+    fn drop(&mut self) {
+        COPY_ACTIVITY.with(|activity| {
+            let (active, peak) = activity.get();
+            activity.set((active - 1, peak));
+        });
+    }
+}
+
 fn copy_recursively_fat_family(
     source: gio::File,
     target: gio::File,
