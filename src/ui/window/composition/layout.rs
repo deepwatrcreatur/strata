@@ -23,11 +23,12 @@ use super::super::{
 
 pub(super) struct Header {
     widget: gtk::HeaderBar,
+    pub(super) actions: gtk::Box,
+    pub(super) new_tab: gtk::Button,
     pub(super) content: gtk::Box,
     pub(super) sidebar_toggle: gtk::ToggleButton,
     pub(super) search: gtk::Button,
     pub(super) settings: gtk::Button,
-    #[cfg(test)]
     pub(super) close: gtk::Button,
 }
 
@@ -50,7 +51,7 @@ impl Header {
         {
             let toggle = sidebar_toggle.downgrade();
             preferences.bind_preference(
-                window,
+                &sidebar_toggle,
                 PreferenceManager::sidebar_expanded,
                 move |_, expanded| {
                     if let Some(toggle) = toggle.upgrade() {
@@ -81,6 +82,9 @@ impl Header {
         });
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         actions.add_css_class("header-actions");
+        let new_tab = header_action(icons::PLUS, "New tab (Ctrl+T)");
+        crate::ui::accessibility::set_label(&new_tab, "New tab");
+        actions.append(&new_tab);
         actions.append(&search);
         actions.append(&appearance);
         actions.append(&settings);
@@ -98,13 +102,14 @@ impl Header {
             sidebar_toggle,
             search,
             settings,
-            #[cfg(test)]
             close,
+            actions,
+            new_tab,
         }
     }
 }
 
-fn header_action(icon: &str, tooltip: &str) -> gtk::Button {
+pub(super) fn header_action(icon: &str, tooltip: &str) -> gtk::Button {
     let button = gtk::Button::builder().tooltip_text(tooltip).build();
     button.set_child(Some(&assets::chrome_icon(icon)));
     button.add_css_class("header-action");

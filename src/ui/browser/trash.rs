@@ -659,7 +659,7 @@ impl ViewState {
                 confirmed_root.as_ref(),
             );
             if let Some(state) = confirmed_state.upgrade()
-                && let Some(trash_button) = state.trash_button.borrow().as_ref()
+                && let Some(trash_button) = state.trash_button.upgrade()
             {
                 let entries = items
                     .iter()
@@ -668,7 +668,7 @@ impl ViewState {
                 let source = state
                     .delete_animation_source()
                     .unwrap_or_else(|| state.overlay.clone().upcast());
-                super::fly_to_trash::fly_from_trash(&source, &entries, trash_button, || {});
+                super::fly_to_trash::fly_from_trash(&source, &entries, &trash_button, || {});
             }
             browser.restore(items.clone());
             browser.focus_active();
@@ -734,11 +734,11 @@ impl ViewState {
 
     fn move_to_trash(self: &Rc<Self>, entries: Vec<FileEntry>) {
         self.pending_delete_entries.replace(entries.clone());
-        if let Some(trash_button) = self.trash_button.borrow().as_ref() {
+        if let Some(trash_button) = self.trash_button.upgrade() {
             let source = self
                 .delete_animation_source()
                 .unwrap_or_else(|| self.overlay.clone().upcast());
-            super::fly_to_trash::fly_to_trash(&source, &entries, trash_button, || {});
+            super::fly_to_trash::fly_to_trash(&source, &entries, &trash_button, || {});
         }
         self.browser.delete(entries, false);
         self.browser.focus_active();
