@@ -356,7 +356,7 @@ impl FileProgressState {
     }
 
     pub(super) fn update_transfer_progress(
-        &self,
+        self: &Rc<Self>,
         completed_items: usize,
         completed_files: usize,
         total_files: Option<usize>,
@@ -410,9 +410,33 @@ impl FileProgressState {
                 .get()
                 .is_some_and(|last| now.duration_since(last) < PROGRESS_THROTTLE_INTERVAL)
         {
+            if self.transfer_render_source.borrow().is_none() {
+                let weak = Rc::downgrade(self);
+                let source = glib::timeout_add_local_once(PROGRESS_THROTTLE_INTERVAL, move || {
+                    let Some(state) = weak.upgrade() else {
+                        return;
+                    };
+                    state.transfer_render_source.take();
+                    if let Some(snapshot) = state.transfer_progress.get() {
+                        state.update_transfer_progress(
+                            snapshot.completed_items,
+                            snapshot.completed_files,
+                            snapshot.total_files,
+                            snapshot.transferred_bytes,
+                            snapshot.total_bytes,
+                        );
+                    }
+                });
+                self.transfer_render_source.replace(Some(source));
+            }
             return;
         }
-        view.last_transfer_render.set(Some(now));
+        if !is_initial {
+            view.last_transfer_render.set(Some(now));
+        }
+        if let Some(source) = self.transfer_render_source.take() {
+            source.remove();
+        }
 
         let current_file = self.transfer_current_file.borrow();
         let (status, bytes, items, fraction) = transfer_progress_status(
@@ -626,6 +650,9 @@ impl FileProgressState {
             source.remove();
         }
         self.file_operation_progress.set((0, 0));
+        if let Some(source) = self.transfer_render_source.take() {
+            source.remove();
+        }
         self.archive_progress.set(None);
         if let Some(source) = self.transfer_cancel_timeout.take() {
             source.remove();

@@ -16,7 +16,6 @@ use crate::ui::controls::{
 use crate::ui::modal::{ModalHost, dismiss_modal_layer, modal_layer, show_error_dialog};
 use gtk::prelude::*;
 use gtk::{gio, glib};
-use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};

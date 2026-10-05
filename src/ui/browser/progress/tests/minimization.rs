@@ -284,6 +284,8 @@ fn docked_copy_archive_and_deletion_update_and_cancel_independently() {
             assert_eq!(progress_card(&first_progress).status.text(), "25%");
             let second_card = progress_card(&second_progress);
             assert_eq!(second_card.status.text(), "65%");
+            fixture.update(second, "second.txt", 70);
+            pump_until(|| second_card.status.text() == "70%");
             assert_eq!(progress_card(&archive_progress).status.text(), "50%");
             assert_eq!(
                 progress_card(&deletion_progress).destination.text(),
@@ -352,10 +354,8 @@ fn background_failure_preserves_an_exclusive_foreground_move() {
                     .is_some()
             });
             fixture.update(next, "moving.txt", 50);
-            assert!(
-                fixture.blur.imp().blurred.get(),
-                "foreground progress should retain modal blur"
-            );
+            let foreground_layer = crate::ui::window::visible_modal_layer(&fixture.window)
+                .expect("exclusive foreground progress remains modal");
             fixture.operations.emit(
                 first,
                 OperationEvent::TransferFailed {
@@ -364,6 +364,7 @@ fn background_failure_preserves_an_exclusive_foreground_move() {
                     completed_locations: Vec::new(),
                 },
             );
+            assert!(foreground_layer.parent().is_some());
             assert!(fixture.view.browser().is_current_operation(next));
             assert!(!fixture.operations.cancelled(next));
             assert_eq!(

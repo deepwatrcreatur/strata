@@ -31,6 +31,7 @@ pub(in crate::ui::browser) struct FileProgressState {
     pub(in crate::ui::browser) archive_compressing: Cell<bool>,
     pub(in crate::ui::browser) deleting: Cell<bool>,
     pub(in crate::ui::browser) transfer_progress: Cell<Option<TransferProgressSnapshot>>,
+    pub(super) transfer_render_source: RefCell<Option<glib::SourceId>>,
     pub(in crate::ui::browser) transfer_current_file: RefCell<Option<String>>,
     pub(in crate::ui::browser) transfer_rate_sample: Cell<Option<(std::time::Instant, u64)>>,
     pub(in crate::ui::browser) transfer_rate_bytes_per_second: Cell<Option<f64>>,
@@ -56,6 +57,7 @@ impl FileProgressState {
             archive_compressing: Cell::new(false),
             deleting: Cell::new(false),
             transfer_progress: Cell::new(None),
+            transfer_render_source: RefCell::new(None),
             transfer_current_file: RefCell::new(None),
             transfer_rate_sample: Cell::new(None),
             transfer_rate_bytes_per_second: Cell::new(None),
@@ -156,7 +158,7 @@ impl ViewState {
         }
         let deleting = self.file_progress().deleting.get();
         if deleting {
-            self.pending_delete_dissolve.take();
+            self.clear_delete_animation();
             self.deferred_delete_empty_depth.set(None);
         }
         if !self.browser.background_file_operation(request_id) {
