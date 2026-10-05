@@ -1869,7 +1869,10 @@ impl BrowserView {
         let entries = if let Some(entries) = self.selected_search_results() {
             entries
         } else if self.view_mode() == BrowserMode::Columns {
-            self.state.browser.selected_entries()
+            self.focused_listing_depth()
+                .map(|depth| self.state.browser.command_entries(depth))
+                .filter(|entries| !entries.is_empty())
+                .unwrap_or_else(|| self.state.browser.deletion_entries())
         } else {
             self.state.browser.deletion_entries()
         };
