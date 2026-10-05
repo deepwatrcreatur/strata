@@ -984,9 +984,7 @@ impl ViewState {
             confirm.set_sensitive(true);
             spinner.stop();
             spinner.set_visible(false);
-            if !cancel_first {
-                confirm.grab_focus();
-            }
+            confirm.grab_focus();
         });
         let task = Rc::new(task);
         let closing_task = task.clone();
