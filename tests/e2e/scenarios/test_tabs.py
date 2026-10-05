@@ -115,6 +115,66 @@ def test_dragging_tab_labels_changes_numbered_order(strata):
     selected_tab(strata, "archive")
 
 
+def tab_chord(strata, suffix):
+    strata.keyboard.press("t")
+    strata.keyboard.press(suffix)
+
+
+@pytest.mark.preferences(tenxer_mode=True)
+@pytest.mark.parametrize("mode", ALL_MODES)
+def test_tenxer_tab_chords_create_select_close_and_respect_text_input(strata, mode):
+    root = strata.fixture.root.name
+    strata.select_entry("todo.txt")
+    strata.keyboard.press("ctrl+l")
+    field = strata.wait(lambda: strata.window.find(role="text", name="Location (Ctrl+L)"), "location editor")
+    strata.keyboard.press("ctrl+a")
+    strata.keyboard.type_text("tn")
+    strata.wait(lambda: field.text == "tn", "tab chord letters to remain literal text")
+    strata.keyboard.press("Escape")
+    strata.keyboard.press("t")
+    strata.wait(lambda: strata.window.find(role="label", name="t-"), "tab chord options")
+    strata.keyboard.press("Escape")
+    strata.keyboard.press("n")
+    strata.wait_for_selection(["todo.txt"], root)
+    tab_chord(strata, "n")
+    strata.open_directory("archive")
+    selected_tab(strata, "archive")
+    tab_chord(strata, "1")
+    selected_tab(strata, root)
+    strata.wait_for_selection(["todo.txt"], root)
+    tab_chord(strata, "2")
+    selected_tab(strata, "archive")
+    tab_chord(strata, "x")
+    strata.wait_for_selection(["todo.txt"], root)
+
+
+@pytest.mark.preferences(tenxer_mode=True)
+def test_zero_selects_the_tenth_tab_with_chords_and_numbered_shortcuts(strata):
+    strata.entry("todo.txt")
+    for number in range(2, 11):
+        strata.fixture.path(f"tab-{number}").mkdir()
+    strata.keyboard.press("F5")
+    strata.entry("tab-10")
+    root = strata.fixture.root.name
+    for number in range(2, 11):
+        strata.keyboard.press("ctrl+shift+1")
+        tab_chord(strata, "n")
+        strata.open_directory(f"tab-{number}")
+        selected_tab(strata, f"tab-{number}")
+    tab_chord(strata, "1")
+    selected_tab(strata, root)
+    tab_chord(strata, "0")
+    selected_tab(strata, "tab-10")
+    strata.keyboard.press("ctrl+shift+1")
+    selected_tab(strata, root)
+    strata.keyboard.press("ctrl+shift+0")
+    selected_tab(strata, "tab-10")
+    tab_chord(strata, "x")
+    selected_tab(strata, "tab-9")
+    tab_chord(strata, "0")
+    selected_tab(strata, "tab-9")
+
+
 def test_ctrl_drop_on_a_tab_copies_without_removing_the_source(strata):
     root = strata.fixture.root.name
     strata.keyboard.press("ctrl+t")

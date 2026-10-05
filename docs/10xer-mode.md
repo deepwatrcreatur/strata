@@ -245,6 +245,22 @@ dismiss, **Esc** does nothing: it never closes a Miller column or the window.
 The sidebar and header controls take the same steps; clearing a filter or
 closing the preview from there returns focus to the file list.
 
+## Tabs
+
+From the listing, press **t**, then a second key. The footer shows **t-** and
+its available commands. Escape cancels the chord; text fields, menus, and
+file-chooser requests do not arm it.
+
+| Chord | Action |
+| --- | --- |
+| **t n** | Open a new tab at the current location |
+| **t x** | Close the active tab (the last tab closes the window) |
+| **t 1–9** | Select tabs 1–9 in their current order |
+| **t 0** | Select tab 10 |
+
+The shared Ctrl-based tab shortcuts also remain available. Hold **Ctrl+Shift**
+to show square number badges; **0** identifies the tenth tab.
+
 ## Files
 
 With an empty fill, **y** / **x** / **d** act on the focused item. Typical flow:
@@ -405,7 +421,7 @@ visible PINNED rows (**1**–**9** in display order). **,**, **c**, and **;** sh
 the same kind of list (sort options / copy path or name / matching custom
 actions) while armed. The second key completes only that chord: **, a** /
 **, m** / **, s** / **, e** sort instead of create / search, and search-result
-**j** / **h** cannot steal a pending **g**, **c**, or **;**. Sort-chord **, n** /
+**j** / **h** cannot steal a pending **g**, **c**, **;**, or **t**. Sort-chord **, n** /
 **, t** cancel with `Unknown chord`.
 
 | Second key | Destination |
@@ -698,7 +714,7 @@ shows no hint. Default-map hints that are unbound or remapped (**Y** for copy pa
 
 Tabs use the same shortcuts in both modes: **Ctrl+T** creates a tab,
 **Ctrl+W** closes it, **Ctrl+Tab / Ctrl+Shift+Tab** cycles tabs, and
-**Ctrl+Shift+1–9** selects a tab directly. Hold **Ctrl+Shift** to show tab
+**Ctrl+Shift+1–9 / 0** selects a tab directly. Hold **Ctrl+Shift** to show tab
 numbers. See [browser tabs](keyboard-navigation.md#browser-tabs).
 
 These default-map shortcuts are unbound or remapped while the mode is on:

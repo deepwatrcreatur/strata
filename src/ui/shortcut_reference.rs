@@ -505,7 +505,7 @@ const DEFAULT_TOOLS: &[(&str, &str)] = &[
     ("Ctrl+W", "Close the active tab"),
     ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
     (
-        "Ctrl+Shift+1–9",
+        "Ctrl+Shift+1–9 / 0",
         "Select a tab (hold Ctrl+Shift for numbers)",
     ),
     ("Ctrl+Alt+T", "Open a terminal"),
@@ -567,11 +567,13 @@ fn tenxer_tools(mode: BrowserMode, chooser: bool) -> Vec<(&'static str, &'static
     ];
     if !chooser {
         shortcuts.extend_from_slice(&[
+            ("t n / t x", "New / close tab"),
+            ("t 1–9 / t 0", "Select tab 1–9 / 10"),
             ("Ctrl+T", "New tab"),
             ("Ctrl+W", "Close the active tab"),
             ("Ctrl+Tab / Ctrl+Shift+Tab", "Next / previous tab"),
             (
-                "Ctrl+Shift+1–9",
+                "Ctrl+Shift+1–9 / 0",
                 "Select a tab (hold Ctrl+Shift for numbers)",
             ),
             ("Ctrl+K", "Open global search"),

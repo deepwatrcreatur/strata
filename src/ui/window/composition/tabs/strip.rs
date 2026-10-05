@@ -25,7 +25,6 @@ struct Header {
     select: gtk::Button,
     label: gtk::Label,
     hint: gtk::Label,
-    close_icons: gtk::Stack,
 }
 
 #[derive(Default)]
@@ -95,7 +94,7 @@ impl TabStrip {
                 color.blue() as f64,
                 color.alpha() as f64,
             );
-            context.rectangle(x, height as f64 - 2.0, width, 2.0);
+            context.rectangle(x, height as f64 - 3.0, width, 3.0);
             let _ = context.fill();
         });
         let ticking_headers = headers.clone();
@@ -180,6 +179,7 @@ impl TabStrip {
         label.set_max_width_chars(22);
         let hint = gtk::Label::new(None);
         hint.add_css_class("tab-key-hint");
+        hint.set_valign(gtk::Align::Center);
         hint.set_visible(false);
         content.append(&label);
         content.append(&hint);
@@ -191,11 +191,11 @@ impl TabStrip {
         close_icons.set_valign(gtk::Align::Center);
         for (name, icon) in [
             (
-                "inactive",
+                "normal",
                 crate::assets::text_icon(crate::assets::icons::X, 10),
             ),
             (
-                "active",
+                "hovered",
                 crate::assets::primary_icon(crate::assets::icons::X, 10),
             ),
         ] {
@@ -204,12 +204,23 @@ impl TabStrip {
             close_icons.add_named(&icon, Some(name));
         }
         close.set_child(Some(&close_icons));
+        let close_hover = gtk::EventControllerMotion::new();
+        let hovered_icons = close_icons.downgrade();
+        close_hover.connect_contains_pointer_notify(move |hover| {
+            if let Some(icons) = hovered_icons.upgrade() {
+                icons.set_visible_child_name(if hover.contains_pointer() {
+                    "hovered"
+                } else {
+                    "normal"
+                });
+            }
+        });
+        close.add_controller(close_hover);
         accessibility::set_label(&close, "Close tab");
         close.add_css_class("tab-close");
         widget.append(&select);
         widget.append(&close);
         let hover = gtk::EventControllerMotion::new();
-        let hovered_icons = close_icons.downgrade();
         hover.connect_contains_pointer_notify(move |hover| {
             let Some(widget) = hover.widget() else {
                 return;
@@ -218,9 +229,6 @@ impl TabStrip {
                 widget.add_css_class("hovered");
             } else {
                 widget.remove_css_class("hovered");
-            }
-            if let Some(icons) = hovered_icons.upgrade() {
-                sync_close_icon(&widget, &icons);
             }
         });
         widget.add_controller(hover);
@@ -254,7 +262,6 @@ impl TabStrip {
             select,
             label,
             hint,
-            close_icons,
         });
         self.label(
             id,
@@ -285,7 +292,6 @@ impl TabStrip {
             } else {
                 header.widget.remove_css_class("active");
             }
-            sync_close_icon(&header.widget, &header.close_icons);
         }
         let selected_headers = Rc::downgrade(&self.headers);
         let selected_indicator = self.indicator.clone();
@@ -342,9 +348,15 @@ impl TabStrip {
     }
 
     pub(super) fn hints(&self, show: bool) {
+        let mut changed = false;
         for (index, header) in self.headers.borrow().iter().enumerate() {
-            header.hint.set_text(&(index + 1).to_string());
-            header.hint.set_visible(show && index < 9);
+            let visible = show && index < 10;
+            changed |= header.hint.is_visible() != visible;
+            header.hint.set_text(&((index + 1) % 10).to_string());
+            header.hint.set_visible(visible);
+        }
+        if changed {
+            self.select(self.indicator.active.get());
         }
     }
 
@@ -371,11 +383,6 @@ impl TabStrip {
         drop(headers);
         self.select(self.indicator.active.get());
     }
-}
-
-fn sync_close_icon(widget: &impl IsA<gtk::Widget>, icons: &gtk::Stack) {
-    let accent = widget.has_css_class("active") || widget.has_css_class("hovered");
-    icons.set_visible_child_name(if accent { "active" } else { "inactive" });
 }
 
 fn install_reordering(state: &Rc<TabWindow>, id: u64, widget: &gtk::Button) {
@@ -425,6 +432,9 @@ fn install_file_drop(state: &Rc<TabWindow>, id: u64, widget: &gtk::Box, browser:
     let weak = Rc::downgrade(state);
     let enter_drop = drop_state.clone();
     target.connect_enter(move |target, _, _| {
+        if let Some(widget) = target.widget() {
+            widget.add_css_class("drag-hovered");
+        }
         let generation = enter_hover.get().wrapping_add(1);
         enter_hover.set(generation);
         let token = enter_hover.clone();
@@ -438,7 +448,12 @@ fn install_file_drop(state: &Rc<TabWindow>, id: u64, widget: &gtk::Box, browser:
         });
         file_drop_action(target, &enter_drop)
     });
-    target.connect_leave(move |_| hover.set(hover.get().wrapping_add(1)));
+    target.connect_leave(move |target| {
+        hover.set(hover.get().wrapping_add(1));
+        if let Some(widget) = target.widget() {
+            widget.remove_css_class("drag-hovered");
+        }
+    });
     let motion_drop = drop_state.clone();
     target.connect_motion(move |target, _, _| file_drop_action(target, &motion_drop));
     let weak_browser = browser.downgrade();

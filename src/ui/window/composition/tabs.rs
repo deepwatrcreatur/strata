@@ -68,6 +68,7 @@ impl TabWindow {
             drag_token: glib::uuid_string_random().to_string(),
         });
         state.add(None);
+        state.install_actions(window);
         state.install_keys(window);
         super::super::install_modal_focus_trap(window);
         tenxer_splash::install(window, &overlay, preferences);
@@ -100,6 +101,9 @@ impl TabWindow {
                 "refresh",
                 "open-terminal",
                 "toggle-arrow-scope",
+                "new-tab",
+                "close-tab",
+                "select-tab",
             ] {
                 window.remove_action(name);
             }
@@ -292,6 +296,44 @@ impl TabWindow {
         self.strip.hints(self.hints.get());
     }
 
+    fn select_index(&self, index: usize) {
+        let id = self.tabs.borrow().get(index).map(|tab| tab.id);
+        if let Some(id) = id {
+            self.select(id);
+        }
+    }
+
+    fn install_actions(self: &Rc<Self>, window: &gtk::ApplicationWindow) {
+        let create = gio::SimpleAction::new("new-tab", None);
+        let weak = Rc::downgrade(self);
+        create.connect_activate(move |_, _| {
+            if let Some(state) = weak.upgrade() {
+                state.new_tab();
+            }
+        });
+        window.add_action(&create);
+
+        let close = gio::SimpleAction::new("close-tab", None);
+        let weak = Rc::downgrade(self);
+        close.connect_activate(move |_, _| {
+            if let Some(state) = weak.upgrade() {
+                state.close(state.active.get());
+            }
+        });
+        window.add_action(&close);
+
+        let select = gio::SimpleAction::new("select-tab", Some(&u32::static_variant_type()));
+        let weak = Rc::downgrade(self);
+        select.connect_activate(move |_, parameter| {
+            if let Some(state) = weak.upgrade()
+                && let Some(index) = parameter.and_then(|value| value.get::<u32>())
+            {
+                state.select_index(index as usize);
+            }
+        });
+        window.add_action(&select);
+    }
+
     fn cycle(&self, delta: i32) {
         let tabs = self.tabs.borrow();
         let current = tabs
@@ -343,9 +385,10 @@ impl TabWindow {
                 _ => M::empty(),
             };
         self.show_hints(held == ctrl_shift);
-        if self.blocked() {
+        if self.blocked() || !is_tab_shortcut(key, modifiers) {
             return glib::Propagation::Proceed;
         }
+        self.active_tab().content.footer.shortcuts.cancel_chord();
         if mods == M::CONTROL_MASK && matches!(key, Key::t | Key::T) {
             self.new_tab();
         } else if mods == M::CONTROL_MASK && matches!(key, Key::w | Key::W) {
@@ -355,12 +398,9 @@ impl TabWindow {
         } else if mods == ctrl_shift && matches!(key, Key::Tab | Key::ISO_Left_Tab) {
             self.cycle(-1);
         } else if mods == ctrl_shift
-            && let Some(index) = tab_number(key)
+            && let Some(index) = tab_index(key)
         {
-            let id = self.tabs.borrow().get(index).map(|tab| tab.id);
-            if let Some(id) = id {
-                self.select(id);
-            }
+            self.select_index(index);
         } else {
             return glib::Propagation::Proceed;
         }
@@ -407,10 +447,10 @@ pub(in crate::ui::window) fn is_tab_shortcut(key: gdk::Key, modifiers: gdk::Modi
     let mods = modifiers & (M::CONTROL_MASK | M::SHIFT_MASK | M::ALT_MASK | M::SUPER_MASK);
     (mods == M::CONTROL_MASK && matches!(key, Key::t | Key::T | Key::w | Key::W | Key::Tab))
         || (mods == (M::CONTROL_MASK | M::SHIFT_MASK)
-            && (matches!(key, Key::Tab | Key::ISO_Left_Tab) || tab_number(key).is_some()))
+            && (matches!(key, Key::Tab | Key::ISO_Left_Tab) || tab_index(key).is_some()))
 }
 
-fn tab_number(key: gdk::Key) -> Option<usize> {
+pub(in crate::ui::window) fn tab_index(key: gdk::Key) -> Option<usize> {
     use gdk::Key;
     Some(match key {
         Key::_1 | Key::exclam | Key::KP_1 => 0,
@@ -422,6 +462,7 @@ fn tab_number(key: gdk::Key) -> Option<usize> {
         Key::_7 | Key::ampersand | Key::KP_7 => 6,
         Key::_8 | Key::asterisk | Key::KP_8 => 7,
         Key::_9 | Key::parenleft | Key::KP_9 => 8,
+        Key::_0 | Key::parenright | Key::KP_0 => 9,
         _ => return None,
     })
 }

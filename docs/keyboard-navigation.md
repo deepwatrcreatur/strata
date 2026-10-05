@@ -12,8 +12,11 @@ The destination column has an accent rule across its header, including when the 
 
 In regular and 10xer modes, **Ctrl+T** opens a tab at the active location,
 **Ctrl+W** closes the active tab, and **Ctrl+Tab / Ctrl+Shift+Tab** cycles tabs.
-Hold **Ctrl+Shift** to display numbers beside the first nine labels; press
-**Ctrl+Shift+1–9** to select one. The last tab's close shortcut closes the window.
+Hold **Ctrl+Shift** to display numbers beside the first ten labels; press
+**Ctrl+Shift+1–9** to select tabs 1–9 or **Ctrl+Shift+0** for tab 10.
+In 10xer mode, **t**, then **n** creates a tab, **t**, then **x** closes it,
+and **t**, then **1–9 / 0** selects tabs 1–10. Escape cancels a pending chord.
+The last tab's close shortcut closes the window.
 The regular-mode terminal shortcut is **Ctrl+Alt+T**; 10xer keeps **;**, then **t**.
 
 Each tab retains its location, selection, navigation history, preview and search

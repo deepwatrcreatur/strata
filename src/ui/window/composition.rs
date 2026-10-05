@@ -18,7 +18,7 @@ mod settings;
 mod tabs;
 mod tenxer_splash;
 
-pub(super) use tabs::{TabWindow, is_tab_shortcut};
+pub(super) use tabs::{TabWindow, is_tab_shortcut, tab_index};
 
 pub(super) struct WindowContent {
     pub(super) browser: BrowserView,
