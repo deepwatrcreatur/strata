@@ -260,7 +260,7 @@ pub(super) struct ViewState {
     trash_loading: RefCell<Option<TrashLoadingView>>,
     unlock_slots: RefCell<Vec<UnlockProgressSlot>>,
     auto_refresh: RefCell<Option<glib::SourceId>>,
-    trash_button: RefCell<Option<gtk::Button>>,
+    trash_button: glib::WeakRef<gtk::Button>,
     drag_autoscroll: RefCell<Option<Rc<columns::drag_scroll::DragAutoscroll>>>,
     drag_source_depth: Cell<Option<usize>>,
     suppress_scroll_after_drop: Cell<bool>,
@@ -634,7 +634,7 @@ impl BrowserView {
             trash_loading: RefCell::new(None),
             unlock_slots: RefCell::new(Vec::new()),
             auto_refresh: RefCell::new(None),
-            trash_button: RefCell::new(None),
+            trash_button: glib::WeakRef::new(),
             drag_autoscroll: RefCell::new(None),
             drag_source_depth: Cell::new(None),
             suppress_scroll_after_drop: Cell::new(false),
@@ -826,6 +826,7 @@ impl BrowserView {
         self.state.browser.finish_navigation_cleanup();
     }
 
+    #[cfg(test)]
     pub(crate) fn connect_navigation_cleanup(&self, window: &gtk::Window) {
         let weak = self.downgrade();
         window.connect_close_request(move |_| {
@@ -936,7 +937,7 @@ impl BrowserView {
     }
 
     pub fn set_trash_button(&self, button: gtk::Button) {
-        self.state.trash_button.replace(Some(button));
+        self.state.trash_button.set(Some(&button));
     }
 
     pub fn begin_rename(&self) -> bool {
@@ -1040,6 +1041,10 @@ impl BrowserView {
         let previous = self.state.mode.get();
         if mode == previous {
             return;
+        }
+        if mode == BrowserMode::Columns {
+            self.state.cancel_peek();
+            self.state.peek_anchor.take();
         }
         // The rebuilt view has a different displayed order for the same anchor.
         self.state.browser.leave_visual();
@@ -1948,7 +1953,7 @@ impl BrowserView {
                 })
                 .collect()
         };
-        let trash_button = self.state.trash_button.borrow().clone();
+        let trash_button = self.state.trash_button.upgrade();
         let undone = self.state.browser.undo_last_trash();
         if undone
             && let Some(trash_button) = trash_button
