@@ -427,7 +427,6 @@ fn columns_shift_delete_deletes_the_cursor_when_the_fill_is_empty() {
             let directory = fixture._directory.path().to_path_buf();
             let browser = fixture.view.browser();
 
-            // A load cursor is not a fill; moving the cursor drops it.
             browser.select_first_on_load(0);
             browser.reload_active();
             wait_until(|| browser.selection_is_load_cursor());
