@@ -2012,11 +2012,6 @@ scrollbar.horizontal > range > trough > slider {
   min-width: 9px;
 }
 
-.mode-list .browser-listing-scroll > scrollbar.vertical {
-  margin-top: 4px;
-  margin-bottom: 4px;
-}
-
 .mode-icons .browser-listing-scroll > scrollbar.vertical > range > trough,
 .mode-list .browser-listing-scroll > scrollbar.vertical > range > trough {
   background: alpha(@strata_border, 0.08);
@@ -2036,6 +2031,12 @@ scrollbar.horizontal > range > trough > slider {
   min-width: 7px;
   margin: 4px 1px;
   border-radius: 999px;
+}
+
+.mode-list .browser-listing-scroll > scrollbar.vertical,
+.mode-list .browser-listing-scroll > scrollbar.vertical > range > trough > slider {
+  margin-top: 0;
+  margin-bottom: 0;
 }
 
 /* The mode scrollers need an opaque base to conceal the sidebar paned handle.
@@ -4549,10 +4550,10 @@ textview > popover.menu button.model:focus-visible,
   padding-top: 4px;
 }
 
-/* Keep the inset outside the scrolling content so editor reveal uses its full viewport. */
-.list-listing-scroll {
-  padding-top: 7px;
-  padding-bottom: 7px;
+/* Inset the list outside its scrolling content without shortening the scrollbar. */
+.list-listing-scroll > listview {
+  margin-top: 7px;
+  margin-bottom: 7px;
 }
 
 .file-list row,
