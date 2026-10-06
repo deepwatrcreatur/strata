@@ -58,8 +58,7 @@ rustPlatform.buildRustPackage rec {
     # Install desktop entry
     install -Dm644 data/io.github.lgse.Strata.desktop $out/share/applications/io.github.lgse.Strata.desktop
     substituteInPlace $out/share/applications/io.github.lgse.Strata.desktop \
-      --replace-fail "Exec=strata" "Exec=$out/bin/strata" \
-      --replace-fail "TryExec=strata" "TryExec=$out/bin/strata"
+      --replace-fail "Exec=strata" "Exec=$out/bin/strata"
 
     # Install application icon
     install -Dm644 data/icons/scalable/apps/io.github.lgse.Strata.svg $out/share/icons/hicolor/scalable/apps/io.github.lgse.Strata.svg
@@ -67,7 +66,7 @@ rustPlatform.buildRustPackage rec {
     # Install D-Bus service for org.freedesktop.FileManager1
     install -Dm644 data/io.github.lgse.Strata.FileManager1.service $out/share/dbus-1/services/io.github.lgse.Strata.FileManager1.service
     substituteInPlace $out/share/dbus-1/services/io.github.lgse.Strata.FileManager1.service \
-      --replace-fail "Exec=strata" "Exec=$out/bin/strata"
+      --replace-fail "Exec=/usr/bin/strata" "Exec=$out/bin/strata"
 
     # Install package manager marker so Strata's in-app updater knows it is managed by Nix
     mkdir -p $out/share/strata
