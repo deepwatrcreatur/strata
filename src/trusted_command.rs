@@ -14,6 +14,8 @@ pub(crate) const SEARCH_ROOTS: &[&str] = &[
     "/sbin",
     "/run/current-system/sw/bin",
     "/run/current-system/profile/bin",
+    "/run/booted-system/sw/bin",
+    "/nix/var/nix/profiles/default/bin",
 ];
 
 // NixOS wrappers are regular files, not store symlinks.
@@ -31,9 +33,29 @@ pub(crate) const TRUST_ROOTS: &[&str] = &[
 mod tests;
 
 pub(crate) fn resolve(name: &str) -> Result<PathBuf, String> {
-    let search: Vec<&Path> = SEARCH_ROOTS.iter().copied().map(Path::new).collect();
+    let mut search: Vec<PathBuf> = SEARCH_ROOTS.iter().map(PathBuf::from).collect();
+    if let Ok(user) = std::env::var("USER") {
+        let per_user = PathBuf::from(format!("/etc/profiles/per-user/{user}/bin"));
+        if per_user.is_dir() && !search.contains(&per_user) {
+            search.push(per_user);
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let nix_profile = PathBuf::from(home).join(".nix-profile/bin");
+        if nix_profile.is_dir() && !search.contains(&nix_profile) {
+            search.push(nix_profile);
+        }
+    }
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for path in std::env::split_paths(&path_var) {
+            if !search.contains(&path) {
+                search.push(path);
+            }
+        }
+    }
+    let search_refs: Vec<&Path> = search.iter().map(PathBuf::as_path).collect();
     let trust: Vec<&Path> = TRUST_ROOTS.iter().copied().map(Path::new).collect();
-    resolve_in(name, &search, &trust)
+    resolve_in(name, &search_refs, &trust)
 }
 
 pub(crate) fn command(name: &str) -> Result<Command, String> {

@@ -709,8 +709,26 @@ fn runtime_command(bwrap: &Path, needs_media_libraries: bool) -> Command {
         "/lib64",
         "/lib64",
         "--ro-bind-try",
+        "/nix/store",
+        "/nix/store",
+        "--ro-bind-try",
+        "/run/current-system/sw",
+        "/run/current-system/sw",
+        "--ro-bind-try",
+        "/run/booted-system/sw",
+        "/run/booted-system/sw",
+        "--ro-bind-try",
+        "/run/opengl-driver",
+        "/run/opengl-driver",
+        "--ro-bind-try",
         "/etc/fonts",
         "/etc/fonts",
+        "--ro-bind-try",
+        "/etc/static/fonts",
+        "/etc/static/fonts",
+        "--ro-bind-try",
+        "/run/current-system/sw/share/X11-fonts",
+        "/run/current-system/sw/share/X11-fonts",
         "--ro-bind-try",
         "/var/cache/fontconfig",
         "/var/cache/fontconfig",
@@ -726,6 +744,11 @@ fn runtime_command(bwrap: &Path, needs_media_libraries: bool) -> Command {
     ]);
     if let Some(loaders) = option_env!("STRATA_SANDBOX_GDK_PIXBUF_MODULE_FILE") {
         command.args(["--setenv", "GDK_PIXBUF_MODULE_FILE", loaders]);
+    }
+    if let Ok(extra_binds) = std::env::var("STRATA_SANDBOX_EXTRA_BINDS") {
+        for path in extra_binds.split(':').filter(|s| !s.is_empty()) {
+            command.args(["--ro-bind-try", path, path]);
+        }
     }
     if needs_media_libraries {
         // Debian-family FFmpeg libraries resolve BLAS/LAPACK through these links.
