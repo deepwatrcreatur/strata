@@ -167,9 +167,9 @@ fn sandbox_command_starts_absolute_bubblewrap() {
     assert!(joined.contains("--unshare-all"));
     assert!(joined.contains("--clearenv"));
     let arguments: Vec<_> = command.get_args().collect();
-    let path = option_env!("STRATA_SANDBOX_PATH").unwrap_or("/usr/bin");
-    let root = option_env!("STRATA_SANDBOX_ROOT").unwrap_or("/usr");
-    let prlimit = option_env!("STRATA_SANDBOX_PRLIMIT").unwrap_or("/usr/bin/prlimit");
+    let path = super::sandbox_path();
+    let root = super::sandbox_root();
+    let prlimit = super::sandbox_prlimit();
     assert!(
         arguments
             .windows(3)
@@ -348,7 +348,7 @@ fn media_previews_use_bounded_streaming_instead_of_driver_wide_resource_limits()
         .collect::<Vec<_>>()
         .join(" ");
     assert!(!command.get_args().any(|argument| {
-        argument == option_env!("STRATA_SANDBOX_PRLIMIT").unwrap_or("/usr/bin/prlimit")
+        argument == super::sandbox_prlimit()
     }));
     assert!(!joined.contains("--as="));
     assert!(!joined.contains("--cpu="));

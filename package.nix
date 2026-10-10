@@ -16,11 +16,15 @@
   fontconfig,
   gst_all_1,
   ffmpeg,
+  ffmpegthumbnailer,
+  imagemagick,
+  util-linux,
+  coreutils,
 }:
 
 rustPlatform.buildRustPackage rec {
   pname = "strata";
-  version = "0.21.0";
+  version = "0.21.1";
 
   src = ./.;
 
@@ -47,9 +51,27 @@ rustPlatform.buildRustPackage rec {
     gst_all_1.gstreamer
     gst_all_1.gst-plugins-base
     gst_all_1.gst-plugins-good
+    gst_all_1.gst-plugins-bad
+    gst_all_1.gst-plugins-ugly
     gst_all_1.gst-libav
     ffmpeg
+    ffmpegthumbnailer
+    imagemagick
+    util-linux
+    coreutils
   ];
+
+  # Sandbox helper paths embedded at build time for bubblewrap on NixOS
+  STRATA_SANDBOX_PATH = lib.makeBinPath [
+    coreutils
+    util-linux
+    ffmpeg
+    ffmpegthumbnailer
+    imagemagick
+  ];
+  STRATA_SANDBOX_ROOT = "/nix/store";
+  STRATA_SANDBOX_PRLIMIT = "${util-linux}/bin/prlimit";
+  STRATA_SANDBOX_GDK_PIXBUF_MODULE_FILE = "${gdk-pixbuf}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache";
 
   # The test suite has extensive unit tests; integration tests needing a display/GPU are skipped
   doCheck = false;
@@ -80,11 +102,20 @@ EOF
 
   preFixup = ''
     gappsWrapperArgs+=(
-      --prefix PATH : "${lib.makeBinPath [ bubblewrap ]}"
+      --prefix PATH : "${lib.makeBinPath [
+        bubblewrap
+        ffmpeg
+        ffmpegthumbnailer
+        imagemagick
+        util-linux
+        coreutils
+      ]}"
       --prefix GST_PLUGIN_SYSTEM_PATH_1_0 : "${lib.makeSearchPath "lib/gstreamer-1.0" [
         gst_all_1.gstreamer
         gst_all_1.gst-plugins-base
         gst_all_1.gst-plugins-good
+        gst_all_1.gst-plugins-bad
+        gst_all_1.gst-plugins-ugly
         gst_all_1.gst-libav
       ]}"
     )

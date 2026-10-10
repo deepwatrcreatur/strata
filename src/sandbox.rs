@@ -671,8 +671,42 @@ fn wait_for_renderer_reporting(
     }
 }
 
+pub(crate) fn sandbox_path() -> &'static str {
+    if let Some(path) = option_env!("STRATA_SANDBOX_PATH") {
+        return path;
+    }
+    if Path::new("/run/current-system/sw/bin").is_dir() {
+        "/run/current-system/sw/bin:/usr/bin"
+    } else {
+        "/usr/bin"
+    }
+}
+
+pub(crate) fn sandbox_root() -> &'static str {
+    if let Some(root) = option_env!("STRATA_SANDBOX_ROOT") {
+        return root;
+    }
+    if !Path::new("/usr").is_dir() && Path::new("/nix/store").is_dir() {
+        "/nix/store"
+    } else {
+        "/usr"
+    }
+}
+
+pub(crate) fn sandbox_prlimit() -> &'static str {
+    if let Some(prlimit) = option_env!("STRATA_SANDBOX_PRLIMIT") {
+        return prlimit;
+    }
+    if Path::new("/run/current-system/sw/bin/prlimit").is_file() {
+        "/run/current-system/sw/bin/prlimit"
+    } else {
+        "/usr/bin/prlimit"
+    }
+}
+
 fn runtime_command(bwrap: &Path, needs_media_libraries: bool) -> Command {
     let mut command = Command::new(bwrap);
+    let root = sandbox_root();
     command.args([
         "--unshare-all",
         "--die-with-parent",
@@ -680,7 +714,7 @@ fn runtime_command(bwrap: &Path, needs_media_libraries: bool) -> Command {
         "--clearenv",
         "--setenv",
         "PATH",
-        option_env!("STRATA_SANDBOX_PATH").unwrap_or("/usr/bin"),
+        sandbox_path(),
         "--setenv",
         "HOME",
         "/nonexistent",
@@ -700,8 +734,8 @@ fn runtime_command(bwrap: &Path, needs_media_libraries: bool) -> Command {
         "--dir",
         "/etc",
         "--ro-bind",
-        option_env!("STRATA_SANDBOX_ROOT").unwrap_or("/usr"),
-        option_env!("STRATA_SANDBOX_ROOT").unwrap_or("/usr"),
+        root,
+        root,
         "--ro-bind-try",
         "/lib",
         "/lib",
@@ -798,7 +832,7 @@ fn sandbox_command(
     command.arg("--");
     if !operation.is_media() {
         command
-            .arg(option_env!("STRATA_SANDBOX_PRLIMIT").unwrap_or("/usr/bin/prlimit"))
+            .arg(sandbox_prlimit())
             .arg(format!("--as={ADDRESS_SPACE_LIMIT_BYTES}"))
             .arg("--cpu=10")
             .arg(format!(
